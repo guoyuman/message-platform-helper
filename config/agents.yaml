@@ -1,0 +1,9 @@
+{
+  "agents": [
+    {"name": "knowledge", "capabilities": ["knowledge.answer", "rag.answer"], "priority": 10, "enabled": true},
+    {"name": "template", "capabilities": ["template.translation", "template.language_sync"], "priority": 20, "enabled": true},
+    {"name": "business_config", "capabilities": ["business_message.configuration"], "priority": 30, "enabled": true},
+    {"name": "channel_config", "capabilities": ["channel.configuration", "email.smtp"], "priority": 40, "enabled": true},
+    {"name": "send_strategy", "capabilities": ["send_strategy.configuration", "rate_limit.evaluation"], "priority": 50, "enabled": true}
+  ]
+}

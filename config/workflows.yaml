@@ -1,0 +1,43 @@
+{
+  "workflows": [
+    {
+      "name": "knowledge_answer",
+      "description": "Answer product usage or troubleshooting questions from enterprise knowledge.",
+      "steps": [
+        {"name": "answer", "agent": "knowledge", "tools": ["knowledge.search", "knowledge.answer"]}
+      ]
+    },
+    {
+      "name": "template_workflow",
+      "description": "Translate or sync message templates and validate platform payloads.",
+      "steps": [
+        {"name": "template", "agent": "template", "tools": ["template.translate", "platform.template.save"]}
+      ]
+    },
+    {
+      "name": "implementation_workflow",
+      "description": "Configure message platform entities through selected implementation agents.",
+      "steps": [
+        {"name": "business", "agent": "business_config", "tools": ["business.build_payload", "platform.business.preview"]},
+        {"name": "channel", "agent": "channel_config", "tools": ["channel.infer_email", "platform.channel.save"]},
+        {"name": "strategy", "agent": "send_strategy", "tools": ["strategy.build", "strategy.evaluate"]}
+      ]
+    },
+    {
+      "name": "message_platform_workflow",
+      "description": "Run a multi-agent message platform workflow.",
+      "steps": [
+        {"name": "knowledge", "agent": "knowledge", "tools": ["knowledge.search"]},
+        {"name": "template", "agent": "template", "tools": ["template.translate"]},
+        {"name": "business", "agent": "business_config", "tools": ["business.build_payload"]},
+        {"name": "channel", "agent": "channel_config", "tools": ["channel.infer_email"]},
+        {"name": "strategy", "agent": "send_strategy", "tools": ["strategy.build"]}
+      ]
+    },
+    {
+      "name": "general_chat",
+      "description": "Handle requests that do not need enterprise actions.",
+      "steps": []
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+Classify the user request for an enterprise message platform assistant.
+Return strict JSON with request_type, domain, operation, intent, confidence, rationale, selectedAgents, selectedTools, workflow, searchQuery, and missingSlots.
+Allowed request_type values: query, action, tool, chat.
+Allowed domain values: business_message, template, error_code, implementation, channel, send_strategy, general.
+Allowed operation values: query, explain, create, update, delete, execute.
+Use request_type=query for product usage, configuration-method, explanation, troubleshooting, or knowledge-base questions.
+Use request_type=action only when the user asks the assistant to create, update, delete, execute, configure, translate, or sync something.
+Keep intent as a legacy compatibility field; do not use it as the primary route signal.

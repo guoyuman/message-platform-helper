@@ -1,0 +1,29 @@
+{
+  "rag_request_types": {
+    "query": true,
+    "action": false,
+    "tool": false,
+    "chat": false
+  },
+  "rag_intents": {
+    "knowledge_query": true,
+    "template_config": true,
+    "implementation": true,
+    "error_code": true,
+    "workflow": true,
+    "translation": false,
+    "summary": false,
+    "casual_chat": false
+  },
+  "intent_workflows": {
+    "knowledge_query": "knowledge_answer",
+    "template_config": "template_workflow",
+    "translation": "template_workflow",
+    "implementation": "implementation_workflow",
+    "error_code": "knowledge_answer",
+    "workflow": "message_platform_workflow",
+    "summary": "general_chat",
+    "casual_chat": "general_chat"
+  },
+  "tool_permissions": {}
+}

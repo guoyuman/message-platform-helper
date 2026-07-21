@@ -1,0 +1,14 @@
+{
+  "tools": [
+    {"name": "knowledge.search", "category": "rag", "capabilities": ["knowledge.search"], "priority": 10, "enabled": true},
+    {"name": "knowledge.answer", "category": "rag", "capabilities": ["knowledge.answer"], "priority": 11, "enabled": true},
+    {"name": "template.translate", "category": "function", "capabilities": ["template.translation"], "priority": 20, "enabled": true},
+    {"name": "platform.template.save", "category": "http", "capabilities": ["template.persistence"], "priority": 21, "enabled": true},
+    {"name": "business.build_payload", "category": "function", "capabilities": ["business_message.configuration"], "priority": 30, "enabled": true},
+    {"name": "platform.business.preview", "category": "http", "capabilities": ["business_message.preview"], "priority": 31, "enabled": true},
+    {"name": "channel.infer_email", "category": "function", "capabilities": ["email.smtp"], "priority": 40, "enabled": true},
+    {"name": "platform.channel.save", "category": "http", "capabilities": ["channel.persistence"], "priority": 41, "enabled": true},
+    {"name": "strategy.build", "category": "function", "capabilities": ["send_strategy.configuration"], "priority": 50, "enabled": true},
+    {"name": "strategy.evaluate", "category": "function", "capabilities": ["rate_limit.evaluation"], "priority": 51, "enabled": true}
+  ]
+}

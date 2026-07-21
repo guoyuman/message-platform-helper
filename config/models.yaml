@@ -1,0 +1,13 @@
+{
+  "default": {
+    "provider": "openai_compatible",
+    "base_url": "",
+    "base_url_env": "OPENAI_BASE_URL",
+    "api_key": "",
+    "api_key_env": "OPENAI_API_KEY",
+    "model_env": "OPENAI_MODEL",
+    "model": "gpt-4.1-mini",
+    "temperature": 0.2,
+    "response_format": "json_object"
+  }
+}

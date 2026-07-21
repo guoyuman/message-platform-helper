@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "message-platform-helper"
+version = "0.1.0"
+description = "Enterprise multi-agent helper for message platform configuration."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.139.2",
+]
+
+[project.optional-dependencies]
+redis = ["redis>=5"]
+server = ["fastapi>=0.111", "uvicorn>=0.30"]
+test = ["pytest>=8"]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+[project.scripts]
+message-platform-helper = "message_platform_helper.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

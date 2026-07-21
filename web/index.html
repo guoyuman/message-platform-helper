@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Message Platform Helper</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">M</div>
+          <div>
+            <h1>消息平台助手</h1>
+            <p>Agent Console</p>
+          </div>
+        </div>
+
+        <section class="panel compact">
+          <div class="panel-title">会话</div>
+          <label>
+            <span>Session</span>
+            <input id="sessionId" value="web-demo" autocomplete="off" />
+          </label>
+          <label>
+            <span>User</span>
+            <input id="userId" value="consultant-001" autocomplete="off" />
+          </label>
+          <label>
+            <span>Tenant</span>
+            <input id="tenantId" value="tenant-demo" autocomplete="off" />
+          </label>
+          <div class="toggle-row">
+            <span>Dry Run</span>
+            <label class="switch">
+              <input id="dryRun" type="checkbox" checked />
+              <span></span>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel compact">
+          <div class="panel-title">快速任务</div>
+          <div class="quick-grid">
+            <button class="quick" data-template="给 ops@example.com 配置邮件通道并测试" type="button">邮件通道</button>
+            <button class="quick" data-template="同步采购订单下所有模板到阿拉伯语" type="button">批量翻译</button>
+            <button class="quick" data-template="消息发送失败原因如何排查？" type="button">失败排查</button>
+            <button class="quick" data-template="消息平台如何使用？给我一份操作说明" type="button">使用说明</button>
+          </div>
+        </section>
+
+        <section class="panel compact status-panel">
+          <div class="panel-title">运行状态</div>
+          <div class="metric">
+            <span>LLM</span>
+            <strong id="llmStatus">Local</strong>
+          </div>
+          <div class="metric">
+            <span>RAG</span>
+            <strong id="ragStatus">Ready</strong>
+          </div>
+          <div class="metric">
+            <span>Memory</span>
+            <strong id="memoryStatus">SQLite</strong>
+          </div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h2>多 Agent 编排工作台</h2>
+            <p id="decisionLine">等待请求</p>
+          </div>
+          <div class="top-actions">
+            <button id="memoryBtn" class="icon-button" title="刷新记忆" aria-label="刷新记忆" type="button">↻</button>
+            <button id="clearBtn" class="icon-button" title="清空输入" aria-label="清空输入" type="button">×</button>
+          </div>
+        </header>
+
+        <section class="chat-panel">
+          <div id="messages" class="messages" aria-live="polite">
+            <div class="message assistant">
+              <div class="avatar">A</div>
+              <div class="bubble">
+                <div class="bubble-title">Message Platform Helper</div>
+                <p>可以直接描述模板翻译、业务配置、邮件通道、发送策略，也可以询问消息平台使用说明和发送失败排查。</p>
+              </div>
+            </div>
+          </div>
+
+          <form id="chatForm" class="composer">
+            <textarea id="prompt" rows="3">消息发送失败原因如何排查？</textarea>
+            <div class="composer-footer">
+              <button id="sendBtn" type="submit" class="primary">发送</button>
+              <span id="requestState">Ready</span>
+            </div>
+          </form>
+        </section>
+      </main>
+
+      <aside class="inspector">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="draft" type="button">结果</button>
+          <button class="tab" data-tab="trace" type="button">轨迹</button>
+          <button class="tab" data-tab="memory" type="button">记忆</button>
+          <button class="tab" data-tab="knowledge" type="button">知识</button>
+        </div>
+
+        <section id="tab-draft" class="tab-panel active">
+          <div class="panel-title">Payload</div>
+          <textarea id="payloadEditor" class="code-input" spellcheck="false">{}</textarea>
+          <div class="panel-title gap">输出</div>
+          <pre id="draftOutput" class="code-output">{}</pre>
+        </section>
+
+        <section id="tab-trace" class="tab-panel">
+          <div class="panel-title">ReAct</div>
+          <div id="traceList" class="trace-list"></div>
+        </section>
+
+        <section id="tab-memory" class="tab-panel">
+          <div class="panel-title">长期记忆</div>
+          <pre id="memoryOutput" class="code-output">{}</pre>
+        </section>
+
+        <section id="tab-knowledge" class="tab-panel">
+          <div class="panel-title">知识入库</div>
+          <label>
+            <span>Title</span>
+            <input id="knowledgeTitle" value="邮件发送失败排查补充" />
+          </label>
+          <label>
+            <span>Tags</span>
+            <input id="knowledgeTags" value="troubleshooting,mail" />
+          </label>
+          <textarea id="knowledgeContent" class="knowledge-input">邮件发送失败时，先检查 SMTP 主机、端口、SSL/TLS、授权码、发件账号、verifyUser 和网络连通性，再通过 /test/sendTestWithChannelConfig 做测试发送。</textarea>
+          <div class="button-row">
+            <button id="ingestBtn" class="secondary" type="button">写入知识库</button>
+            <button id="knowledgeStatsBtn" class="secondary" type="button">查看统计</button>
+          </div>
+
+          <div class="panel-title gap">知识检索</div>
+          <label>
+            <span>Query</span>
+            <input id="knowledgeQuery" value="消息发送失败原因如何排查" />
+          </label>
+          <button id="knowledgeSearchBtn" class="secondary" type="button">检索</button>
+          <pre id="knowledgeOutput" class="code-output small">{}</pre>
+        </section>
+      </aside>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
