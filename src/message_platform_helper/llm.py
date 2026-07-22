@@ -318,7 +318,7 @@ class RuleBasedLLMClient(LLMClient):
             "payload_domains": payload_domains,
             "domain_candidates": domain_candidates,
             "is_empty": not text.strip() and not payload,
-            "explicit_knowledge": bool(payload.get("knowledge")) or self._score(forms, lowered, KNOWLEDGE_PATTERNS) > 0,
+            "explicit_knowledge": bool(payload.get("../../knowledge")) or self._score(forms, lowered, KNOWLEDGE_PATTERNS) > 0,
         }
 
     def _classify_request_type(self, signals: JsonDict, payload: JsonDict) -> str:

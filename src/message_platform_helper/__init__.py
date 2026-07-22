@@ -1,5 +1,5 @@
 """Message platform helper package."""
 
-from .orchestrator import MessagePlatformHelper
+from message_platform_helper.orchestrator import MessagePlatformHelper
 
 __all__ = ["MessagePlatformHelper"]
