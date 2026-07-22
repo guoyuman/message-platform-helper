@@ -111,7 +111,7 @@ async function loadHealth() {
     const llm = response.llm || {};
     const label = llm.mode === "online" ? `Online · ${llm.model || "model"}` : "Offline";
     elements.llmStatus.textContent = label;
-    elements.memoryStatus.textContent = response.dataDir ? "SQLite" : "Ready";
+    elements.memoryStatus.textContent = response.database ? "PostgreSQL" : "Ready";
   } catch (error) {
     elements.llmStatus.textContent = "Unknown";
   }

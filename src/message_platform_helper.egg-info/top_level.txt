@@ -1,1 +1,0 @@
-message_platform_helper

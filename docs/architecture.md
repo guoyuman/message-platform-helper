@@ -39,7 +39,7 @@ Infrastructure Layer
   infrastructure/            Trace、Metrics、结构化日志
 
 External Systems
-  LLM / SQLite / Redis / Java Platform / message-agent / Future MCP / Future Vector DB
+  LLM / PostgreSQL + pgvector / Redis / Java Platform / message-agent / Future MCP
 ```
 
 ## 目录结构
@@ -295,7 +295,7 @@ KnowledgeBaseRetriever
   -> RagService
 ```
 
-当前 `KnowledgeBase` 仍负责 SQLite 存储、chunking、BM25-like 检索和默认知识入库。未来接入向量库时，实现新的 `Retriever` 即可，不需要改 Agent。
+当前 `KnowledgeBase` 是 PostgreSQL + pgvector facade，负责文档入库、chunking、embedding 保存和默认知识入库。检索层通过 keyword、substring fallback 和 vector retriever 混合召回。
 
 ## Streaming
 

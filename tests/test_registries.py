@@ -10,7 +10,7 @@ from message_platform_helper.agents.registry import AgentRegistry, build_default
 from message_platform_helper.application.security import PermissionPolicy, TenantContext
 from message_platform_helper.config import Settings
 from message_platform_helper.llm import RuleBasedLLMClient
-from message_platform_helper.memory import MemoryManager, SQLiteMemoryStore
+from message_platform_helper.memory import InMemoryMemoryStore, MemoryManager
 from message_platform_helper.models import (
     AgentResult,
     AgentSpec,
@@ -27,10 +27,12 @@ from message_platform_helper.models import (
 )
 from message_platform_helper.orchestrator import MessagePlatformHelper
 from message_platform_helper.platform import PlatformGateway
-from message_platform_helper.rag import KnowledgeBase
+from message_platform_helper.rag import KnowledgeBaseRetriever, build_rag_service
 from message_platform_helper.rate_limit import MemoryCounterStore
 from message_platform_helper.react import AgentContext, ReActAgent
 from message_platform_helper.tools import ToolRegistry
+
+from tests.fakes import InMemoryKnowledgeBase
 
 
 @dataclass
@@ -100,14 +102,16 @@ class ContractAndRegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             llm = RuleBasedLLMClient()
+            kb = InMemoryKnowledgeBase()
             helper = MessagePlatformHelper(
                 settings=Settings(data_dir=root),
                 llm=llm,
-                memory_manager=MemoryManager(SQLiteMemoryStore(root / "memory.sqlite3"), llm),
-                knowledge_base=KnowledgeBase(root / "kb.sqlite3"),
+                memory_manager=MemoryManager(InMemoryMemoryStore({}), llm),
+                knowledge_base=kb,
                 platform=PlatformGateway(),
                 counter_store=MemoryCounterStore({}),
                 agent_registry=registry,
+                rag_service=build_rag_service(KnowledgeBaseRetriever(kb)),
             )
 
             resolved = helper._agent_sequence(["unknown", "noop"])

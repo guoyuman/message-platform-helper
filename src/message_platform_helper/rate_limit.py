@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from abc import ABC, abstractmethod
-from contextlib import closing
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict
+
+from sqlalchemy.dialects.postgresql import insert
+
+from .rag.db import CounterRecord, build_session_factory
 
 
 class CounterStore(ABC):
@@ -18,41 +19,32 @@ class CounterStore(ABC):
 
 
 @dataclass
-class SQLiteCounterStore(CounterStore):
-    path: Path
+class PostgresCounterStore(CounterStore):
+    database_url: str
 
     def __post_init__(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as conn:
-            conn.execute(
-                """
-                create table if not exists counters (
-                  key text primary key,
-                  value integer not null,
-                  expires_at real not null
-                )
-                """
-            )
-            conn.commit()
+        self._factory = build_session_factory(self.database_url)
 
     def increment(self, key: str, ttl_seconds: int) -> int:
         now = time.time()
-        with closing(sqlite3.connect(self.path)) as conn:
-            row = conn.execute("select value, expires_at from counters where key=?", (key,)).fetchone()
-            if not row or row[1] < now:
+        expires_at = now + ttl_seconds
+        with self._factory() as session:
+            record = session.get(CounterRecord, key)
+            if record is None or record.expires_at < now:
                 value = 1
-                expires_at = now + ttl_seconds
             else:
-                value = int(row[0]) + 1
-                expires_at = float(row[1])
-            conn.execute(
-                """
-                insert into counters(key, value, expires_at) values(?, ?, ?)
-                on conflict(key) do update set value=excluded.value, expires_at=excluded.expires_at
-                """,
-                (key, value, expires_at),
+                value = int(record.value) + 1
+                expires_at = float(record.expires_at)
+            stmt = (
+                insert(CounterRecord)
+                .values(key=key, value=value, expires_at=expires_at)
+                .on_conflict_do_update(
+                    index_elements=[CounterRecord.key],
+                    set_={"value": value, "expires_at": expires_at},
+                )
             )
-            conn.commit()
+            session.execute(stmt)
+            session.commit()
         return value
 
 
@@ -92,10 +84,10 @@ class MemoryCounterStore(CounterStore):
         return value
 
 
-def build_counter_store(data_dir: Path, redis_url: str = "") -> CounterStore:
+def build_counter_store(database_url: str, redis_url: str = "") -> CounterStore:
     if redis_url:
         try:
             return RedisCounterStore(redis_url)
         except Exception:
             pass
-    return SQLiteCounterStore(data_dir / "counters.sqlite3")
+    return PostgresCounterStore(database_url)

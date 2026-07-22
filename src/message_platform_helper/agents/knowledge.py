@@ -77,18 +77,20 @@ class KnowledgeAgent(ReActAgent):
 
 def build_answer(question: str, chunks: List[KnowledgeChunk]) -> str:
     lowered = question.lower()
-    is_failure = any(keyword in question for keyword in ("失败", "报错", "排查", "错误", "异常")) or any(keyword in lowered for keyword in ("fail", "error", "troubleshoot"))
+    is_failure = any(keyword in question for keyword in ("失败", "报错", "排查", "错误", "异常")) or any(
+        keyword in lowered for keyword in ("fail", "error", "troubleshoot")
+    )
     lines: List[str] = []
     if is_failure:
         lines.append("可以按这条链路排查：先定位失败阶段，再验证配置、模板、接收人、策略和通道。")
     else:
-        lines.append("可以按知识库里的流程执行，先配置基础对象，再预览校验，最后保存发布并验证。")
+        lines.append("可以按知识库里的流程执行：先配置基础对象，再预览校验，最后保存发布并验证。")
 
     for index, chunk in enumerate(chunks, start=1):
         excerpt = compact_text(chunk.content, 260)
         lines.append(f"{index}. {chunk.title}: {excerpt}")
 
-    lines.append("建议在实际处理时保留发送记录里的错误码、通道、接收人、模板编码和请求 payload，便于继续追踪。")
+    lines.append("建议实际处理时保留发送记录里的错误码、通道、接收人、模板编码和请求 payload，便于继续追踪。")
     return "\n".join(lines)
 
 

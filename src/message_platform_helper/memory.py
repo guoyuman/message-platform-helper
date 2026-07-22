@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from abc import ABC, abstractmethod
-from contextlib import closing
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List
 
 from .llm import LLMClient
 from .models import ConversationMemory, JsonDict, UserProfile, deep_merge, now_ts, to_jsonable
+from .rag.db import HelperRunRecord, SessionMemoryRecord, build_session_factory
 
 
 class MemoryStore(ABC):
@@ -29,73 +27,44 @@ class MemoryStore(ABC):
 
 
 @dataclass
-class SQLiteMemoryStore(MemoryStore):
-    path: Path
+class PostgresMemoryStore(MemoryStore):
+    database_url: str
 
     def __post_init__(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as conn:
-            conn.executescript(
-                """
-                create table if not exists session_memory (
-                  session_id text primary key,
-                  memory_json text not null,
-                  updated_at real not null
-                );
-                create table if not exists helper_runs (
-                  id integer primary key autoincrement,
-                  session_id text not null,
-                  request_json text not null,
-                  response_json text not null,
-                  created_at real not null
-                );
-                create index if not exists idx_helper_runs_session on helper_runs(session_id, created_at desc);
-                """
-            )
-            conn.commit()
+        self._factory = build_session_factory(self.database_url)
 
     def load(self, session_id: str) -> ConversationMemory:
-        with closing(sqlite3.connect(self.path)) as conn:
-            row = conn.execute("select memory_json from session_memory where session_id=?", (session_id,)).fetchone()
-        if not row:
-            return ConversationMemory(session_id=session_id)
-        return memory_from_dict(json.loads(row[0]))
+        with self._factory() as session:
+            record = session.get(SessionMemoryRecord, session_id)
+            if record is None:
+                return ConversationMemory(session_id=session_id)
+            return memory_from_dict(dict(record.memory_json or {}))
 
     def save(self, memory: ConversationMemory) -> ConversationMemory:
         memory.updated_at = now_ts()
-        payload = json.dumps(to_jsonable(memory), ensure_ascii=False)
-        with closing(sqlite3.connect(self.path)) as conn:
-            conn.execute(
-                """
-                insert into session_memory(session_id, memory_json, updated_at)
-                values(?, ?, ?)
-                on conflict(session_id) do update set
-                  memory_json=excluded.memory_json,
-                  updated_at=excluded.updated_at
-                """,
-                (memory.session_id, payload, memory.updated_at),
-            )
-            conn.commit()
+        payload = to_jsonable(memory)
+        with self._factory() as session:
+            record = session.get(SessionMemoryRecord, memory.session_id)
+            if record is None:
+                record = SessionMemoryRecord(session_id=memory.session_id)
+                session.add(record)
+            record.memory_json = payload
+            session.commit()
         return memory
 
     def clear(self, session_id: str) -> None:
-        with closing(sqlite3.connect(self.path)) as conn:
-            conn.execute("delete from session_memory where session_id=?", (session_id,))
-            conn.commit()
+        with self._factory() as session:
+            record = session.get(SessionMemoryRecord, session_id)
+            if record is not None:
+                session.delete(record)
+                session.commit()
 
     def save_run(self, session_id: str, request: JsonDict, response: JsonDict) -> int:
-        with closing(sqlite3.connect(self.path)) as conn:
-            cursor = conn.execute(
-                "insert into helper_runs(session_id, request_json, response_json, created_at) values(?, ?, ?, ?)",
-                (
-                    session_id,
-                    json.dumps(request, ensure_ascii=False),
-                    json.dumps(response, ensure_ascii=False),
-                    now_ts(),
-                ),
-            )
-            conn.commit()
-            return int(cursor.lastrowid)
+        with self._factory() as session:
+            record = HelperRunRecord(session_id=session_id, request_json=request, response_json=response)
+            session.add(record)
+            session.commit()
+            return int(record.id)
 
 
 @dataclass
@@ -124,6 +93,29 @@ class RedisMemoryStore(MemoryStore):
 
     def clear(self, session_id: str) -> None:
         self._client.delete(self.prefix + session_id)
+
+
+@dataclass
+class InMemoryMemoryStore(MemoryStore):
+    values: Dict[str, ConversationMemory]
+    runs: List[JsonDict] | None = None
+
+    def load(self, session_id: str) -> ConversationMemory:
+        return self.values.get(session_id, ConversationMemory(session_id=session_id))
+
+    def save(self, memory: ConversationMemory) -> ConversationMemory:
+        memory.updated_at = now_ts()
+        self.values[memory.session_id] = memory_from_dict(to_jsonable(memory))
+        return memory
+
+    def clear(self, session_id: str) -> None:
+        self.values.pop(session_id, None)
+
+    def save_run(self, session_id: str, request: JsonDict, response: JsonDict) -> int:
+        if self.runs is None:
+            self.runs = []
+        self.runs.append({"session_id": session_id, "request": request, "response": response, "created_at": now_ts()})
+        return len(self.runs)
 
 
 @dataclass
@@ -205,10 +197,10 @@ def _facts_from_payload(payload: JsonDict) -> JsonDict:
     return facts
 
 
-def build_memory_store(data_dir: Path, redis_url: str = "") -> MemoryStore:
+def build_memory_store(database_url: str, redis_url: str = "") -> MemoryStore:
     if redis_url:
         try:
             return RedisMemoryStore(redis_url)
         except Exception:
             pass
-    return SQLiteMemoryStore(data_dir / "memory.sqlite3")
+    return PostgresMemoryStore(database_url)

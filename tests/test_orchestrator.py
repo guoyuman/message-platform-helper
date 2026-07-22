@@ -6,12 +6,14 @@ from pathlib import Path
 
 from message_platform_helper.config import Settings
 from message_platform_helper.llm import RuleBasedLLMClient
-from message_platform_helper.memory import MemoryManager, SQLiteMemoryStore
+from message_platform_helper.memory import InMemoryMemoryStore, MemoryManager
 from message_platform_helper.models import AssistantRequest
 from message_platform_helper.orchestrator import MessagePlatformHelper
 from message_platform_helper.platform import PlatformGateway
-from message_platform_helper.rag import KnowledgeBase, seed_default_knowledge
-from message_platform_helper.rate_limit import SQLiteCounterStore
+from message_platform_helper.rag import KnowledgeBaseRetriever, build_rag_service, seed_default_knowledge
+from message_platform_helper.rate_limit import MemoryCounterStore
+
+from tests.fakes import InMemoryKnowledgeBase
 
 
 def sample_template_detail() -> dict:
@@ -47,15 +49,16 @@ class OrchestratorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             llm = RuleBasedLLMClient()
-            kb = KnowledgeBase(root / "kb.sqlite3")
+            kb = InMemoryKnowledgeBase()
             seed_default_knowledge(kb)
             helper = MessagePlatformHelper(
                 settings=Settings(data_dir=root),
                 llm=llm,
-                memory_manager=MemoryManager(SQLiteMemoryStore(root / "memory.sqlite3"), llm),
+                memory_manager=MemoryManager(InMemoryMemoryStore({}), llm),
                 knowledge_base=kb,
                 platform=PlatformGateway(),
-                counter_store=SQLiteCounterStore(root / "counter.sqlite3"),
+                counter_store=MemoryCounterStore({}),
+                rag_service=build_rag_service(KnowledgeBaseRetriever(kb)),
             )
             response = helper.handle(
                 AssistantRequest(
@@ -86,15 +89,16 @@ class OrchestratorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             llm = RuleBasedLLMClient()
-            kb = KnowledgeBase(root / "kb.sqlite3")
+            kb = InMemoryKnowledgeBase()
             seed_default_knowledge(kb)
             helper = MessagePlatformHelper(
                 settings=Settings(data_dir=root),
                 llm=llm,
-                memory_manager=MemoryManager(SQLiteMemoryStore(root / "memory.sqlite3"), llm),
+                memory_manager=MemoryManager(InMemoryMemoryStore({}), llm),
                 knowledge_base=kb,
                 platform=PlatformGateway(),
-                counter_store=SQLiteCounterStore(root / "counter.sqlite3"),
+                counter_store=MemoryCounterStore({}),
+                rag_service=build_rag_service(KnowledgeBaseRetriever(kb)),
             )
             response = helper.handle(AssistantRequest(text="消息发送失败原因如何排查？", session_id="s-knowledge", payload={}, dry_run=True))
         self.assertTrue(response.ok)

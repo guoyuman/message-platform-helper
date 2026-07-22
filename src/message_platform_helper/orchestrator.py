@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,10 +14,12 @@ from .decision import DecisionEngine, build_default_decision_engine, to_reasonin
 from .decision import KnowledgePolicy, WorkflowRouter
 from .infrastructure.observability import RequestMetrics, TraceContext, elapsed_ms, log_request_completed
 from .llm import LLMClient, build_llm, describe_llm
-from .memory import MemoryManager, MemoryStore, SQLiteMemoryStore, build_memory_store
+from .memory import MemoryManager, build_memory_store
 from .models import AgentResult, AssistantRequest, HelperResponse, JsonDict, KnowledgeChunk, to_jsonable
 from .platform import PlatformGateway
-from .rag import KnowledgeBase, KnowledgeBaseRetriever, RagService, build_rag_service, seed_default_knowledge
+from .rag import KnowledgeBase, RagService, build_postgres_rag_service, seed_default_knowledge
+from .rag.db import build_session_factory, rag_database_url
+from .rag.embedding import build_embedding_provider
 from .rate_limit import CounterStore, build_counter_store
 from .react import AgentContext, ReActAgent
 from .tools import ToolRegistry
@@ -49,7 +50,8 @@ class MessagePlatformHelper:
         if self.config_catalog and self.config_catalog.policies and self.tool_registry is not None:
             self.tool_registry.permission_policy = permission_policy_from_config(self.config_catalog.policies)
         if self.rag_service is None:
-            self.rag_service = build_rag_service(KnowledgeBaseRetriever(self.knowledge_base))
+            session = build_session_factory(self.knowledge_base.database_url)()
+            self.rag_service = build_postgres_rag_service(session, self.knowledge_base.embedding_provider)
         if self.workflow_registry is None:
             self.workflow_registry = (
                 build_workflow_registry_from_config(self.config_catalog.workflows)
@@ -74,19 +76,21 @@ class MessagePlatformHelper:
     def from_env(cls) -> "MessagePlatformHelper":
         settings = load_settings()
         settings.data_dir.mkdir(parents=True, exist_ok=True)
+        database_url = settings.rag_database_url or rag_database_url()
         llm = build_llm(settings)
-        memory_store = build_memory_store(settings.data_dir, settings.redis_url)
-        kb = KnowledgeBase(settings.data_dir / "knowledge.sqlite3")
-        if not settings.data_dir_explicit:
-            kb.import_from(Path(tempfile.gettempdir()) / "message-platform-helper" / "knowledge.sqlite3")
+        memory_store = build_memory_store(database_url, settings.redis_url)
+        embedding_provider = build_embedding_provider()
+        kb = KnowledgeBase(database_url, embedding_provider=embedding_provider)
         seed_default_knowledge(kb)
         platform = PlatformGateway(
             platform_base_url=settings.platform_base_url,
             business_agent_url=settings.business_agent_url,
             headers=settings.platform_headers or {},
         )
-        counter_store = build_counter_store(settings.data_dir, settings.redis_url)
+        counter_store = build_counter_store(database_url, settings.redis_url)
         config_catalog = load_platform_config(settings.config_dir)
+        session = build_session_factory(database_url)()
+        rag_service = build_postgres_rag_service(session, embedding_provider)
         return cls(
             settings=settings,
             llm=llm,
@@ -95,6 +99,7 @@ class MessagePlatformHelper:
             platform=platform,
             counter_store=counter_store,
             config_catalog=config_catalog,
+            rag_service=rag_service,
         )
 
     def handle(self, request: AssistantRequest) -> HelperResponse:
@@ -180,11 +185,27 @@ class MessagePlatformHelper:
         after = self.knowledge_base.count()
         return {
             "ok": True,
-            "db_path": str(self.knowledge_base.path),
+            "database_url": self.knowledge_base.database_url,
             "before_chunks": before,
             "after_chunks": after,
             "delta_chunks": after - before,
             "chunks": [to_jsonable(chunk) for chunk in chunks],
+            "ingestion": self.knowledge_base.last_ingestion.to_dict() if self.knowledge_base.last_ingestion else None,
+            "stats": self.knowledge_base.stats(),
+        }
+
+    def ingest_knowledge_file(self, path: str, tags: List[str] | None = None, replace: bool = True) -> JsonDict:
+        before = self.knowledge_base.count()
+        chunks = self.knowledge_base.ingest_file(Path(path), tags=tags, replace=replace)
+        after = self.knowledge_base.count()
+        return {
+            "ok": True,
+            "database_url": self.knowledge_base.database_url,
+            "before_chunks": before,
+            "after_chunks": after,
+            "delta_chunks": after - before,
+            "chunks": [to_jsonable(chunk) for chunk in chunks],
+            "ingestion": self.knowledge_base.last_ingestion.to_dict() if self.knowledge_base.last_ingestion else None,
             "stats": self.knowledge_base.stats(),
         }
 
@@ -194,7 +215,7 @@ class MessagePlatformHelper:
         chunks = self.rag_service.retrieve(query, limit=limit, tags=tags)
         return {
             "ok": True,
-            "db_path": str(self.knowledge_base.path),
+            "database_url": self.knowledge_base.database_url,
             "query": query,
             "chunks": [to_jsonable(chunk) for chunk in chunks],
             "total_chunks": self.knowledge_base.count(),
@@ -210,6 +231,7 @@ class MessagePlatformHelper:
             "llm": describe_llm(self.llm, self.settings),
             "dataDir": str(self.settings.data_dir),
             "configDir": str(self.settings.config_dir) if self.settings.config_dir else "",
+            "database": {"type": "postgresql", "urlConfigured": bool(self.knowledge_base.database_url)},
         }
 
     def _agent_sequence(self, names: List[str]) -> List[ReActAgent]:
@@ -225,8 +247,8 @@ class MessagePlatformHelper:
         return ", ".join(parts)
 
     def _save_run(self, request: AssistantRequest, response: HelperResponse) -> None:
-        store: MemoryStore = self.memory_manager.store
-        if isinstance(store, SQLiteMemoryStore):
+        store = self.memory_manager.store
+        if hasattr(store, "save_run"):
             store.save_run(request.session_id, to_jsonable(request), to_jsonable(response))
 
 

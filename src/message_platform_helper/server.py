@@ -62,13 +62,20 @@ class HelperHandler(BaseHTTPRequestHandler):
                 self._json(to_jsonable(response), status=200 if response.ok else 422)
                 return
             if path == "/api/knowledge/ingest":
-                result = self.helper.ingest_knowledge(
-                    title=str(payload.get("title") or "Untitled"),
-                    content=str(payload.get("content") or ""),
-                    source=str(payload.get("source") or "api"),
-                    tags=list(payload.get("tags") or []),
-                    replace=bool(payload.get("replace", True)),
-                )
+                if payload.get("path"):
+                    result = self.helper.ingest_knowledge_file(
+                        path=str(payload.get("path")),
+                        tags=list(payload.get("tags") or []),
+                        replace=bool(payload.get("replace", True)),
+                    )
+                else:
+                    result = self.helper.ingest_knowledge(
+                        title=str(payload.get("title") or "Untitled"),
+                        content=str(payload.get("content") or ""),
+                        source=str(payload.get("source") or "api"),
+                        tags=list(payload.get("tags") or []),
+                        replace=bool(payload.get("replace", True)),
+                    )
                 self._json(result)
                 return
             if path == "/api/knowledge/search":

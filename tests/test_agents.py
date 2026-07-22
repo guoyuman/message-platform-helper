@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 
 from message_platform_helper.agents.channel_config import infer_email_config
 from message_platform_helper.agents.send_strategy import build_strategy
@@ -10,7 +8,7 @@ from message_platform_helper.agents.template import TemplateAgent, extract_varia
 from message_platform_helper.llm import RuleBasedLLMClient
 from message_platform_helper.models import AssistantRequest, ConversationMemory
 from message_platform_helper.platform import PlatformGateway
-from message_platform_helper.rate_limit import SQLiteCounterStore
+from message_platform_helper.rate_limit import MemoryCounterStore
 from message_platform_helper.react import AgentContext
 from message_platform_helper.strategy import SendStrategyEvaluator
 
@@ -60,13 +58,7 @@ class AgentUnitTests(unittest.TestCase):
         context = AgentContext(
             request=AssistantRequest(
                 text="同步采购订单下所有模板到阿拉伯语",
-                payload={
-                    "template": {
-                        "templates": [sample_template_detail()],
-                        "sourceLanguage": "en_US",
-                        "targetLanguage": "阿拉伯语",
-                    }
-                },
+                payload={"template": {"templates": [sample_template_detail()], "sourceLanguage": "en_US", "targetLanguage": "阿拉伯语"}},
                 dry_run=True,
             ),
             memory=ConversationMemory(session_id="s-template"),
@@ -89,9 +81,9 @@ class AgentUnitTests(unittest.TestCase):
                 "id": "content-002",
                 "channelType": "mail",
                 "language": "ar_SA",
-                "title": "إشعار الموافقة على الأعمال",
-                "content": "مرحبًا {{orderNo}}",
-                "raw": "مرحبًا {{orderNo}}",
+                "title": "اشعار الموافقة على الأعمال",
+                "content": "مرحبا {{orderNo}}",
+                "raw": "مرحبا {{orderNo}}",
                 "contentType": "html",
             }
         )
@@ -113,21 +105,16 @@ class AgentUnitTests(unittest.TestCase):
 
     def test_strategy_frequency_blocks_after_limit(self) -> None:
         strategy = build_strategy("每小时最多 1 次，只允许邮件通道", {})
-        with tempfile.TemporaryDirectory() as tmp:
-            evaluator = SendStrategyEvaluator(SQLiteCounterStore(Path(tmp) / "counter.sqlite3"))
-            first = evaluator.evaluate(strategy, {"channels": ["mail"], "receivers": ["u001"]})
-            second = evaluator.evaluate(strategy, {"channels": ["mail"], "receivers": ["u001"]})
+        evaluator = SendStrategyEvaluator(MemoryCounterStore({}))
+        first = evaluator.evaluate(strategy, {"channels": ["mail"], "receivers": ["u001"]})
+        second = evaluator.evaluate(strategy, {"channels": ["mail"], "receivers": ["u001"]})
         self.assertTrue(first.allowed)
         self.assertFalse(second.allowed)
         self.assertIn("frequency", second.matched_rules)
 
     def test_strategy_channel_limit_blocks_sms(self) -> None:
         strategy = build_strategy("只允许邮件通道", {})
-        with tempfile.TemporaryDirectory() as tmp:
-            decision = SendStrategyEvaluator(SQLiteCounterStore(Path(tmp) / "counter.sqlite3")).evaluate(
-                strategy,
-                {"channels": ["sms"], "receivers": ["u001"]},
-            )
+        decision = SendStrategyEvaluator(MemoryCounterStore({})).evaluate(strategy, {"channels": ["sms"], "receivers": ["u001"]})
         self.assertFalse(decision.allowed)
 
 

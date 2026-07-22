@@ -57,6 +57,12 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
 
     @app.post("/api/knowledge/ingest")
     async def ingest_knowledge(payload: dict):
+        if payload.get("path"):
+            return helper.ingest_knowledge_file(
+                path=str(payload.get("path")),
+                tags=list(payload.get("tags") or []),
+                replace=bool(payload.get("replace", True)),
+            )
         return helper.ingest_knowledge(
             title=str(payload.get("title") or "Untitled"),
             content=str(payload.get("content") or ""),

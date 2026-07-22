@@ -1,25 +1,31 @@
-"""SQLite-backed RAG knowledge base."""
+"""PostgreSQL-backed RAG knowledge base facade."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
-import sqlite3
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import overload
 
-from ..models import JsonDict, KnowledgeChunk, now_ts
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from ..models import JsonDict, KnowledgeChunk
 from .chunker import ChunkStrategy, MarkdownChunkStrategy, RecursiveChunkStrategy
+from .db import ChunkRecord, DocumentRecord, build_session_factory, rag_database_url
+from .embedding import EmbeddingProvider, build_embedding_provider
+from .ingestion import DocumentIngestionPipeline
 from .loader import TextLoader
-from .loader.base import default_loader_factory
 from .models import Chunk, Document, DocumentMetadata, normalize_tags, stable_document_id
-from .parser.base import parser_for
+from .repository import ChunkRepository, DocumentRepository
+from .repository.utils import chunk_to_knowledge, stable_uuid
 
 
+LOGGER = logging.getLogger(__name__)
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_.#/-]+|[\u4e00-\u9fff]")
 DEFAULT_KNOWLEDGE_DIR = Path(__file__).resolve().parents[3] / "knowledge"
 
@@ -37,52 +43,38 @@ class KnowledgeDocument:
 
 
 @dataclass
+class IngestionSummary:
+    file_name: str
+    file_type: str
+    text_length: int
+    chunk_count: int
+    embedding_dimensions: int
+
+    def to_dict(self) -> JsonDict:
+        return {
+            "file_name": self.file_name,
+            "file_type": self.file_type,
+            "text_length": self.text_length,
+            "chunk_count": self.chunk_count,
+            "embedding_dimensions": self.embedding_dimensions,
+        }
+
+
 class KnowledgeBase:
-    path: Path
+    """Compatibility facade over the PostgreSQL RAG tables."""
 
-    def __post_init__(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
-
-    def _init_schema(self) -> None:
-        with closing(sqlite3.connect(self.path)) as conn:
-            conn.executescript(
-                """
-                create table if not exists parent_documents (
-                  id text primary key,
-                  title text not null,
-                  content text not null,
-                  metadata_json text not null,
-                  created_at real not null,
-                  updated_at real not null
-                );
-
-                create table if not exists knowledge_chunks (
-                  id text primary key,
-                  title text not null,
-                  content text not null,
-                  source text not null,
-                  tags_json text not null,
-                  tokens_json text not null,
-                  metadata_json text not null default '{}',
-                  parent_document_id text not null default '',
-                  created_at real not null,
-                  updated_at real not null
-                );
-                """
-            )
-            columns = {row[1] for row in conn.execute("pragma table_info(knowledge_chunks)").fetchall()}
-            if "updated_at" not in columns:
-                conn.execute("alter table knowledge_chunks add column updated_at real")
-                conn.execute("update knowledge_chunks set updated_at = created_at where updated_at is null")
-            if "metadata_json" not in columns:
-                conn.execute("alter table knowledge_chunks add column metadata_json text not null default '{}'")
-            if "parent_document_id" not in columns:
-                conn.execute("alter table knowledge_chunks add column parent_document_id text not null default ''")
-            conn.execute("create index if not exists idx_knowledge_chunks_source on knowledge_chunks(source)")
-            conn.execute("create index if not exists idx_knowledge_chunks_updated_at on knowledge_chunks(updated_at)")
-            conn.execute("create index if not exists idx_knowledge_chunks_parent on knowledge_chunks(parent_document_id)")
-            conn.commit()
+    def __init__(
+        self,
+        database_url: str | None = None,
+        *,
+        embedding_provider: EmbeddingProvider | None = None,
+        session_factory: sessionmaker[Session] | None = None,
+    ) -> None:
+        self.database_url = database_url or rag_database_url()
+        self.path = self.database_url
+        self.embedding_provider = embedding_provider or build_embedding_provider()
+        self._factory = session_factory or build_session_factory(self.database_url)
+        self.last_ingestion: IngestionSummary | None = None
 
     @overload
     def ingest(self, chunks: list[Chunk]) -> list[KnowledgeChunk]:
@@ -111,70 +103,7 @@ class KnowledgeBase:
             if content is None:
                 raise ValueError("Knowledge content is required.")
             return self.ingest_legacy(chunks, content, source=source, tags=tags)
-        return [self.save(chunk) for chunk in chunks]
-
-    def save(self, chunk: Chunk) -> KnowledgeChunk:
-        source = str(chunk.metadata.get("source") or "manual")
-        tags = normalize_tags([str(tag) for tag in chunk.metadata.get("tags", [])])
-        tokens = tokenize(chunk.title + "\n" + chunk.content)
-        timestamp = now_ts()
-        with closing(sqlite3.connect(self.path)) as conn:
-            conn.execute(
-                """
-                insert into knowledge_chunks(
-                  id, title, content, source, tags_json, tokens_json, metadata_json,
-                  parent_document_id, created_at, updated_at
-                )
-                values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(id) do update set
-                  title=excluded.title,
-                  content=excluded.content,
-                  source=excluded.source,
-                  tags_json=excluded.tags_json,
-                  tokens_json=excluded.tokens_json,
-                  metadata_json=excluded.metadata_json,
-                  parent_document_id=excluded.parent_document_id,
-                  updated_at=excluded.updated_at
-                """,
-                (
-                    chunk.id,
-                    normalize_title(chunk.title),
-                    normalize_content(chunk.content),
-                    source,
-                    json.dumps(tags, ensure_ascii=False),
-                    json.dumps(tokens, ensure_ascii=False),
-                    json.dumps(chunk.metadata, ensure_ascii=False),
-                    chunk.parent_document_id,
-                    timestamp,
-                    timestamp,
-                ),
-            )
-            conn.commit()
-        return chunk.to_legacy()
-
-    def save_parent_document(self, document: Document) -> None:
-        timestamp = now_ts()
-        with closing(sqlite3.connect(self.path)) as conn:
-            conn.execute(
-                """
-                insert into parent_documents(id, title, content, metadata_json, created_at, updated_at)
-                values(?, ?, ?, ?, ?, ?)
-                on conflict(id) do update set
-                  title=excluded.title,
-                  content=excluded.content,
-                  metadata_json=excluded.metadata_json,
-                  updated_at=excluded.updated_at
-                """,
-                (
-                    document.id,
-                    normalize_title(document.title),
-                    normalize_content(document.content),
-                    json.dumps(document.metadata.to_dict(), ensure_ascii=False),
-                    timestamp,
-                    timestamp,
-                ),
-            )
-            conn.commit()
+        return self.save_chunks(chunks)
 
     def ingest_legacy(
         self,
@@ -184,57 +113,10 @@ class KnowledgeBase:
         source: str = "manual",
         tags: list[str] | None = None,
     ) -> KnowledgeChunk:
-        document = TextLoader().load(content, title=title, tags=tags)
-        document.metadata.source = str(source or "manual")
-        chunk = Chunk(
-            id=_chunk_id(title, content, source),
-            title=normalize_title(title),
-            content=normalize_content(content),
-            parent_document_id=document.id,
-            metadata={
-                "parent_document_id": document.id,
-                "document": normalize_title(title),
-                "section": normalize_title(title),
-                "section_level": 0,
-                "level": 0,
-                "title": normalize_title(title),
-                "source": document.metadata.source,
-                "tags": normalize_tags(tags),
-                "format": "text",
-                "chunk_index": 0,
-                "chunk_count": 1,
-            },
-        )
-        self.save_parent_document(document)
-        return self.save(chunk)
-
-    def ingest_file(
-        self,
-        path: Path,
-        tags: list[str] | None = None,
-        *,
-        strategy: ChunkStrategy | None = None,
-        replace: bool = True,
-    ) -> list[KnowledgeChunk]:
-        loader = default_loader_factory().create(path)
-        document = loader.load(path, tags=tags)
-        return self.ingest_document(document, strategy=strategy, replace=replace)
-
-    def ingest_document(
-        self,
-        document: Document,
-        *,
-        strategy: ChunkStrategy | None = None,
-        replace: bool = True,
-    ) -> list[KnowledgeChunk]:
-        if replace:
-            self.delete_document(document.title, document.metadata.source)
-        self.save_parent_document(document)
-        parser = parser_for(document)
-        sections = parser.parse(document)
-        chunk_strategy = strategy or _default_strategy(document)
-        chunks = chunk_strategy.chunk(document, sections)
-        return self.ingest(chunks)
+        chunks = self.ingest_text(title, content, source=source, tags=tags)
+        if not chunks:
+            raise ValueError("Knowledge content did not produce chunks.")
+        return chunks[0]
 
     def ingest_text(
         self,
@@ -248,151 +130,173 @@ class KnowledgeBase:
     ) -> list[KnowledgeChunk]:
         document = TextLoader().load(text, title=title, tags=tags)
         document.metadata.source = str(source or "manual")
-        if replace:
-            self.delete_document(document.title, document.metadata.source)
-        self.save_parent_document(document)
-        sections = parser_for(document).parse(document)
-        chunks = (strategy or RecursiveChunkStrategy()).chunk(document, sections)
-        return self.ingest(chunks)
+        return self.ingest_document(document, strategy=strategy or RecursiveChunkStrategy(), replace=replace)
+
+    def ingest_file(
+        self,
+        path: Path,
+        tags: list[str] | None = None,
+        *,
+        strategy: ChunkStrategy | None = None,
+        replace: bool = True,
+    ) -> list[KnowledgeChunk]:
+        result = DocumentIngestionPipeline(chunk_strategy=strategy).ingest_path(path, tags=tags)
+        return self._persist_ingestion(result.document, result.chunks, replace=replace, file_name=Path(path).name)
+
+    def ingest_document(
+        self,
+        document: Document,
+        *,
+        strategy: ChunkStrategy | None = None,
+        replace: bool = True,
+    ) -> list[KnowledgeChunk]:
+        result = DocumentIngestionPipeline(chunk_strategy=strategy).ingest_document(document)
+        return self._persist_ingestion(result.document, result.chunks, replace=replace, file_name=document.title)
+
+    def save_chunks(self, chunks: list[Chunk]) -> list[KnowledgeChunk]:
+        if not chunks:
+            return []
+        embeddings = self.embedding_provider.embed([chunk.content for chunk in chunks])
+        self._validate_embeddings(embeddings)
+        with self._factory() as session:
+            ChunkRepository(session).save_many(chunks, embeddings)
+            session.commit()
+        return [chunk.to_legacy() for chunk in chunks]
 
     def delete(self, chunk_id: str) -> int:
-        with closing(sqlite3.connect(self.path)) as conn:
-            cursor = conn.execute("delete from knowledge_chunks where id = ?", (chunk_id,))
-            deleted = cursor.rowcount if cursor.rowcount is not None else 0
-            conn.commit()
-        return deleted
+        with self._factory() as session:
+            result = session.execute(delete(ChunkRecord).where(ChunkRecord.id == stable_uuid(chunk_id)))
+            session.commit()
+            return int(result.rowcount or 0)
 
     def delete_document(self, title: str, source: str) -> int:
         title = normalize_title(title)
         source = str(source or "manual")
-        pattern = f"{title} #%"
-        with closing(sqlite3.connect(self.path)) as conn:
-            cursor = conn.execute(
-                "delete from knowledge_chunks where source = ? and (title = ? or title like ? or json_extract(metadata_json, '$.document') = ?)",
-                (source, title, pattern, title),
-            )
-            deleted = cursor.rowcount if cursor.rowcount is not None else 0
-            conn.execute("delete from parent_documents where title = ? and json_extract(metadata_json, '$.source') = ?", (title, source))
-            conn.commit()
-        return deleted
+        with self._factory() as session:
+            ids = [
+                row[0]
+                for row in session.execute(
+                    select(DocumentRecord.id).where(DocumentRecord.title == title, DocumentRecord.source == source)
+                ).all()
+            ]
+            if not ids:
+                return 0
+            chunk_count = int(session.scalar(select(func.count()).select_from(ChunkRecord).where(ChunkRecord.document_id.in_(ids))) or 0)
+            session.execute(delete(DocumentRecord).where(DocumentRecord.id.in_(ids)))
+            session.commit()
+            return chunk_count
 
     def delete_source(self, source: str) -> int:
         source = str(source or "").strip()
         if not source:
             return 0
-        with closing(sqlite3.connect(self.path)) as conn:
-            cursor = conn.execute("delete from knowledge_chunks where source = ?", (source,))
-            deleted = cursor.rowcount if cursor.rowcount is not None else 0
-            conn.execute("delete from parent_documents where json_extract(metadata_json, '$.source') = ?", (source,))
-            conn.commit()
-        return deleted
+        with self._factory() as session:
+            ids = [row[0] for row in session.execute(select(DocumentRecord.id).where(DocumentRecord.source == source)).all()]
+            if not ids:
+                return 0
+            chunk_count = int(session.scalar(select(func.count()).select_from(ChunkRecord).where(ChunkRecord.document_id.in_(ids))) or 0)
+            session.execute(delete(DocumentRecord).where(DocumentRecord.id.in_(ids)))
+            session.commit()
+            return chunk_count
 
     def search(self, query: str, *, limit: int = 5, tags: list[str] | None = None) -> list[KnowledgeChunk]:
-        query_tokens = tokenize(query)
-        if not query_tokens:
-            return []
-        tag_filter = set(tags or [])
-        with closing(sqlite3.connect(self.path)) as conn:
-            rows = conn.execute("select id, title, content, source, tags_json, tokens_json from knowledge_chunks").fetchall()
-        scored: list[KnowledgeChunk] = []
-        for row in rows:
-            chunk_tags = json.loads(row[4])
-            if tag_filter and not tag_filter.intersection(chunk_tags):
-                continue
-            tokens = json.loads(row[5])
-            score = bm25_like(query_tokens, tokens) + phrase_boost(query, row[1], row[2])
-            if score <= 0:
-                continue
-            scored.append(KnowledgeChunk(id=row[0], title=row[1], content=row[2], source=row[3], tags=chunk_tags, score=score))
-        return sorted(scored, key=lambda item: item.score, reverse=True)[:limit]
+        from .repository import VectorRepository
+        from .retrieval import HybridRetriever, KeywordRetriever, VectorRetriever
+
+        with self._factory() as session:
+            retriever = HybridRetriever(
+                KeywordRetriever(ChunkRepository(session)),
+                VectorRetriever(VectorRepository(session), self.embedding_provider),
+            )
+            return retriever.retrieve(query, limit=limit, tags=tags)
 
     def list_chunks(self, *, limit: int = 20) -> list[KnowledgeChunk]:
-        with closing(sqlite3.connect(self.path)) as conn:
-            rows = conn.execute(
-                """
-                select id, title, content, source, tags_json
-                from knowledge_chunks
-                order by coalesce(updated_at, created_at) desc
-                limit ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [KnowledgeChunk(id=row[0], title=row[1], content=row[2], source=row[3], tags=json.loads(row[4])) for row in rows]
+        with self._factory() as session:
+            rows = session.execute(
+                select(ChunkRecord, DocumentRecord)
+                .join(DocumentRecord, ChunkRecord.document_id == DocumentRecord.id)
+                .order_by(ChunkRecord.updated_at.desc())
+                .limit(limit)
+            ).all()
+            return [chunk_to_knowledge(chunk, document) for chunk, document in rows]
 
     def count(self) -> int:
-        with closing(sqlite3.connect(self.path)) as conn:
-            return int(conn.execute("select count(*) from knowledge_chunks").fetchone()[0])
+        with self._factory() as session:
+            return int(session.scalar(select(func.count()).select_from(ChunkRecord)) or 0)
 
     def stats(self) -> JsonDict:
-        with closing(sqlite3.connect(self.path)) as conn:
-            total = int(conn.execute("select count(*) from knowledge_chunks").fetchone()[0])
-            sources = [
-                {"source": row[0], "chunks": row[1]}
-                for row in conn.execute("select source, count(*) from knowledge_chunks group by source order by count(*) desc, source").fetchall()
-            ]
-            tag_rows = conn.execute("select tags_json from knowledge_chunks").fetchall()
-            latest = [
-                {"id": row[0], "title": row[1], "source": row[2], "updated_at": row[3]}
-                for row in conn.execute(
-                    """
-                    select id, title, source, coalesce(updated_at, created_at)
-                    from knowledge_chunks
-                    order by coalesce(updated_at, created_at) desc
-                    limit 8
-                    """
-                ).fetchall()
-            ]
+        with self._factory() as session:
+            total = int(session.scalar(select(func.count()).select_from(ChunkRecord)) or 0)
+            source_rows = session.execute(
+                select(DocumentRecord.source, func.count(ChunkRecord.id))
+                .join(ChunkRecord, ChunkRecord.document_id == DocumentRecord.id)
+                .group_by(DocumentRecord.source)
+                .order_by(func.count(ChunkRecord.id).desc(), DocumentRecord.source)
+            ).all()
+            latest_rows = session.execute(
+                select(ChunkRecord, DocumentRecord)
+                .join(DocumentRecord, ChunkRecord.document_id == DocumentRecord.id)
+                .order_by(ChunkRecord.updated_at.desc())
+                .limit(8)
+            ).all()
+            tag_rows = session.execute(select(ChunkRecord.metadata_)).all()
         tag_counts: dict[str, int] = {}
-        for row in tag_rows:
-            for tag in json.loads(row[0]):
-                tag_counts[tag] = tag_counts.get(tag, 0) + 1
-        tags = [{"tag": tag, "chunks": count} for tag, count in sorted(tag_counts.items(), key=lambda item: (-item[1], item[0]))]
-        return {"db_path": str(self.path), "total_chunks": total, "sources": sources, "tags": tags, "latest": latest}
+        for (metadata,) in tag_rows:
+            for tag in list((metadata or {}).get("tags") or []):
+                tag_counts[str(tag)] = tag_counts.get(str(tag), 0) + 1
+        return {
+            "database_url": self.database_url,
+            "total_chunks": total,
+            "sources": [{"source": source, "chunks": count} for source, count in source_rows],
+            "tags": [{"tag": tag, "chunks": count} for tag, count in sorted(tag_counts.items(), key=lambda item: (-item[1], item[0]))],
+            "latest": [
+                {"id": str(chunk.id), "title": chunk_to_knowledge(chunk, document).title, "source": document.source, "updated_at": chunk.updated_at.isoformat()}
+                for chunk, document in latest_rows
+            ],
+        }
 
     def import_from(self, source_path: Path) -> int:
-        if not source_path.exists():
-            return 0
-        try:
-            if self.path.resolve() == source_path.resolve():
-                return 0
-        except OSError:
-            return 0
-        imported = 0
-        with closing(sqlite3.connect(source_path)) as source_conn:
-            source_tables = {row[0] for row in source_conn.execute("select name from sqlite_master where type='table'").fetchall()}
-            if "knowledge_chunks" not in source_tables:
-                return 0
-            rows = source_conn.execute("select * from knowledge_chunks").fetchall()
-            columns = [column[0] for column in source_conn.execute("select * from knowledge_chunks limit 0").description]
-        with closing(sqlite3.connect(self.path)) as target_conn:
-            for raw_row in rows:
-                row = dict(zip(columns, raw_row))
-                if target_conn.execute("select 1 from knowledge_chunks where id = ?", (row["id"],)).fetchone():
-                    continue
-                target_conn.execute(
-                    """
-                    insert into knowledge_chunks(
-                      id, title, content, source, tags_json, tokens_json, metadata_json,
-                      parent_document_id, created_at, updated_at
-                    )
-                    values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["id"],
-                        row["title"],
-                        row["content"],
-                        row["source"],
-                        row["tags_json"],
-                        row["tokens_json"],
-                        row.get("metadata_json") or "{}",
-                        row.get("parent_document_id") or "",
-                        row["created_at"],
-                        row.get("updated_at") or row["created_at"],
-                    ),
-                )
-                imported += 1
-            target_conn.commit()
-        return imported
+        LOGGER.info("Legacy local import is disabled; ignoring source path %s", source_path)
+        return 0
+
+    def _persist_ingestion(self, document: Document, chunks: list[Chunk], *, replace: bool, file_name: str) -> list[KnowledgeChunk]:
+        document.content = normalize_content(document.content)
+        if not chunks:
+            raise ValueError(f"Document produced no chunks: {document.title}")
+        embeddings = self.embedding_provider.embed([chunk.content for chunk in chunks])
+        dimensions = self._validate_embeddings(embeddings)
+        if replace:
+            self.delete_document(document.title, document.metadata.source)
+        with self._factory() as session:
+            DocumentRepository(session).save(document)
+            ChunkRepository(session).save_many(chunks, embeddings)
+            session.commit()
+        self.last_ingestion = IngestionSummary(
+            file_name=file_name,
+            file_type=document.metadata.format,
+            text_length=len(document.content),
+            chunk_count=len(chunks),
+            embedding_dimensions=dimensions,
+        )
+        LOGGER.info(
+            "RAG ingest completed file=%s type=%s text_length=%s chunks=%s embedding_dimensions=%s",
+            file_name,
+            document.metadata.format,
+            len(document.content),
+            len(chunks),
+            dimensions,
+        )
+        return [chunk.to_legacy() for chunk in chunks]
+
+    def _validate_embeddings(self, embeddings: list[list[float]]) -> int:
+        if not embeddings:
+            raise ValueError("Embedding provider returned no vectors.")
+        dimensions = len(embeddings[0])
+        if dimensions <= 0:
+            raise ValueError("Embedding vectors must not be empty.")
+        if any(len(vector) != dimensions for vector in embeddings):
+            raise ValueError("Embedding dimensions are inconsistent.")
+        return dimensions
 
 
 def split_text(text: str, max_chars: int = 900) -> list[str]:
@@ -436,7 +340,7 @@ def normalize_title(title: str) -> str:
 def normalize_content(content: str) -> str:
     normalized = str(content or "").strip()
     if not normalized:
-        raise ValueError("Knowledge content is required.")
+        raise ValueError("Knowledge content is empty after parsing.")
     return normalized
 
 
@@ -476,12 +380,6 @@ def _default_document_source(path: Path, root: Path) -> str:
     except ValueError:
         relative = Path(path.name)
     return f"default:{relative.as_posix()}"
-
-
-def _default_strategy(document: Document) -> ChunkStrategy:
-    if document.metadata.format == "markdown":
-        return MarkdownChunkStrategy()
-    return RecursiveChunkStrategy()
 
 
 def _chunk_id(title: str, content: str, source: str) -> str:

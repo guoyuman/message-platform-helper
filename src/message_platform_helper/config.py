@@ -27,6 +27,7 @@ class Settings:
     platform_base_url: str = ""
     business_agent_url: str = ""
     platform_headers: Dict[str, str] | None = None
+    rag_database_url: str = ""
 
 
 def load_settings() -> Settings:
@@ -78,14 +79,12 @@ def load_settings() -> Settings:
         platform_base_url=os.environ.get("MESSAGE_HELPER_PLATFORM_BASE_URL", "").rstrip("/"),
         business_agent_url=os.environ.get("MESSAGE_HELPER_BUSINESS_AGENT_URL", "").rstrip("/"),
         platform_headers=headers,
+        rag_database_url=os.environ.get("MESSAGE_HELPER_RAG_DATABASE_URL", ""),
     )
 
 
 def default_data_dir() -> Path:
     project_root = Path(__file__).resolve().parents[2]
-    workspace_root = project_root.parent
-    if (workspace_root / "knowledge.sqlite3").exists() or (workspace_root / "memory.sqlite3").exists():
-        return workspace_root
     return project_root / "data"
 
 

@@ -60,11 +60,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "ingest":
         path = Path(args.path)
-        source = args.source or str(path)
-        chunks = helper.knowledge_base.ingest_text(path.stem, path.read_text(encoding="utf-8"), source=source, tags=args.tag, replace=not args.append)
+        if args.source:
+            content = path.read_text(encoding="utf-8")
+            result = helper.ingest_knowledge(path.stem, content, source=args.source, tags=args.tag, replace=not args.append)
+        else:
+            result = helper.ingest_knowledge_file(str(path), tags=args.tag, replace=not args.append)
         print(
             json.dumps(
-                {"ok": True, "db_path": str(helper.knowledge_base.path), "chunks": [to_jsonable(chunk) for chunk in chunks], "stats": helper.knowledge_base.stats()},
+                result,
                 ensure_ascii=False,
                 indent=2,
             )
