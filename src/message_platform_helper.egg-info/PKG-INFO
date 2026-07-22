@@ -4,7 +4,10 @@ Version: 0.1.0
 Summary: Enterprise multi-agent helper for message platform configuration.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
+Requires-Dist: alembic>=1.13
 Requires-Dist: fastapi>=0.139.2
+Requires-Dist: pgvector>=0.3
+Requires-Dist: sqlalchemy>=2.0
 Provides-Extra: redis
 Requires-Dist: redis>=5; extra == "redis"
 Provides-Extra: server

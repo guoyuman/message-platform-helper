@@ -11,8 +11,9 @@ from .knowledge_base import (
     split_text,
     tokenize,
 )
-from .loader import DocumentLoader, LoaderFactory
+from .loader import DocumentLoader, LoaderFactory, MarkdownLoader
 from .models import Chunk, Document, DocumentMetadata, DocumentSection, ParentDocument
+from .parser import MarkdownParser
 from .prompt_builder import RagPromptBuilder
 from .reranker import Reranker, ScoreReranker
 from .retriever import KnowledgeBaseRetriever, Retriever
@@ -31,6 +32,8 @@ __all__ = [
     "KnowledgeDocument",
     "LoaderFactory",
     "MarkdownChunkStrategy",
+    "MarkdownLoader",
+    "MarkdownParser",
     "ParentChildChunkStrategy",
     "ParentDocument",
     "RagPromptBuilder",

@@ -1,4 +1,7 @@
+alembic>=1.13
 fastapi>=0.139.2
+pgvector>=0.3
+sqlalchemy>=2.0
 
 [redis]
 redis>=5

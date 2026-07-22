@@ -21,7 +21,7 @@ from .parser.base import parser_for
 
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_.#/-]+|[\u4e00-\u9fff]")
-DEFAULT_KNOWLEDGE_DIR = Path(__file__).resolve().parents[2] / "knowledge"
+DEFAULT_KNOWLEDGE_DIR = Path(__file__).resolve().parents[3] / "knowledge"
 
 
 def tokenize(text: str) -> list[str]:
