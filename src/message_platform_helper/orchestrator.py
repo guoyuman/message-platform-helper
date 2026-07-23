@@ -85,6 +85,7 @@ class MessagePlatformHelper:
         platform = PlatformGateway(
             platform_base_url=settings.platform_base_url,
             business_agent_url=settings.business_agent_url,
+            mock_database_url=database_url,
             headers=settings.platform_headers or {},
         )
         counter_store = build_counter_store(database_url, settings.redis_url)
@@ -141,6 +142,17 @@ class MessagePlatformHelper:
         started = time.perf_counter()
         results = self.workflow_executor.execute(decision.workflow, decision.selected_agents, context)
         metrics.tool_time_ms += elapsed_ms(started)
+        if not results and decision.request_type == "chat":
+            started = time.perf_counter()
+            answer = self.llm.answer(request.text)
+            metrics.model_time_ms += elapsed_ms(started)
+            results = [
+                AgentResult(
+                    agent="chat",
+                    ok=bool(answer.get("ok", True)),
+                    output=answer,
+                )
+            ]
 
         issues = [issue for result in results for issue in result.issues]
         next_actions = [action for result in results for action in result.next_actions]

@@ -41,6 +41,69 @@ def sample_template_detail() -> dict:
     }
 
 
+def sample_multichannel_template_detail() -> dict:
+    detail = sample_template_detail()
+    detail["messageTempVO"]["templateName"] = "Purchase requisition notice"
+    detail["messageTempVO"]["templateCode"] = "purchase_requisition_notice"
+    detail["messageTemplateContentVOList"] = [
+        {
+            "id": "content-mail-cn",
+            "channelType": "mail",
+            "language": "zh_CN",
+            "title": "请购单${billNo}已保存",
+            "content": '<div style="color:red">单号：<b>${billNo}</b><a href="https://example.test">查看</a></div>',
+            "raw": '<div style="color:red">单号：<b>${billNo}</b><a href="https://example.test">查看</a></div>',
+            "contentType": "html",
+        },
+        {
+            "id": "content-mail-id",
+            "channelType": "mail",
+            "language": "id_ID",
+            "title": "existing",
+            "content": "existing",
+            "raw": "existing",
+            "contentType": "html",
+        },
+        {
+            "id": "content-uspace-cn",
+            "channelType": "uspace",
+            "language": "zh_CN",
+            "title": "请购单#{billNo}待审批",
+            "content": "请处理 {{userName}} 的请购单 #{billNo}",
+            "raw": "请处理 {{userName}} 的请购单 #{billNo}",
+            "contentType": "text",
+        },
+    ]
+    return detail
+
+
+class TemplateSyncPlatform(PlatformGateway):
+    def __init__(self) -> None:
+        super().__init__()
+        self.find_payloads: list[dict] = []
+        self.saved_payloads: list[dict] = []
+
+    def get_domain_tree(self, payload: dict | None = None, dry_run: bool = True) -> dict:
+        return {
+            "ok": True,
+            "tree": [
+                {
+                    "name": "采购领域",
+                    "code": "purchase",
+                    "children": [{"name": "请购单", "code": "PR001", "documentId": "PR001", "children": []}],
+                }
+            ],
+        }
+
+    def find_templates(self, payload: dict, dry_run: bool = True) -> dict:
+        self.find_payloads.append(payload)
+        return {"ok": True, "data": {"templates": [sample_multichannel_template_detail()]}}
+
+    def save_template(self, payload: dict, dry_run: bool = True) -> dict:
+        self.saved_payloads.append(payload)
+        return {"ok": True, "status": "saved", "payload": payload}
+
+
 class AgentUnitTests(unittest.TestCase):
     def test_email_config_infers_provider(self) -> None:
         config = infer_email_config("ops@gmail.com", {})
@@ -102,6 +165,32 @@ class AgentUnitTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertFalse(result.output["translatedTemplates"])
         self.assertEqual(result.output["skippedTemplates"][0]["reason"], "already exists")
+
+    def test_template_sync_resolves_business_object_and_syncs_missing_channels(self) -> None:
+        platform = TemplateSyncPlatform()
+        context = AgentContext(
+            request=AssistantRequest(
+                text="将请购单下的所有模板信息同步到印尼语种下",
+                dry_run=True,
+            ),
+            memory=ConversationMemory(session_id="s-template"),
+            retrieved=[],
+            llm=RuleBasedLLMClient(),
+            platform=platform,
+        )
+        result = TemplateAgent().run(context)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["businessObject"]["businessObjectCode"], "PR001")
+        self.assertEqual(platform.find_payloads[0]["businessObjectCode"], "PR001")
+        saved_contents = platform.saved_payloads[0]["messageTemplateContentVOList"]
+        id_contents = [item for item in saved_contents if item["language"] == "id_ID"]
+        self.assertEqual(len(id_contents), 2)
+        self.assertEqual([item["channelType"] for item in id_contents].count("mail"), 1)
+        self.assertEqual([item["channelType"] for item in id_contents].count("uspace"), 1)
+        translated_uspace = [item for item in id_contents if item["channelType"] == "uspace"][0]
+        self.assertIn("#{billNo}", translated_uspace["title"])
+        self.assertIn("{{userName}}", translated_uspace["content"])
+        self.assertIn("检查目标语种是否存在", result.output["executionTrace"])
 
     def test_strategy_frequency_blocks_after_limit(self) -> None:
         strategy = build_strategy("每小时最多 1 次，只允许邮件通道", {})

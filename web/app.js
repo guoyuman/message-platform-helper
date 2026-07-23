@@ -81,16 +81,96 @@ async function sendChat() {
   };
 
   try {
-    const response = await fetchJson("/api/chat", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    state.lastResponse = response;
-    renderResponse(response);
-    setState(response.ok ? "Ready" : "Needs Review");
+    await streamChat(body);
   } catch (error) {
     setState("Failed");
     appendMessage("assistant", String(error.message || error), ["error"]);
+  }
+}
+
+async function streamChat(body) {
+  elements.traceList.innerHTML = "";
+  appendTraceEvent("Started", "request queued");
+  const response = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || response.statusText);
+  }
+  if (!response.body) {
+    const fallback = await fetchJson("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    state.lastResponse = fallback;
+    renderResponse(fallback);
+    setState(fallback.ok ? "Ready" : "Needs Review");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() || "";
+    for (const part of parts) {
+      handleStreamChunk(part);
+    }
+  }
+  if (buffer.trim()) {
+    handleStreamChunk(buffer);
+  }
+}
+
+function handleStreamChunk(chunk) {
+  const line = chunk
+    .split("\n")
+    .find((item) => item.startsWith("data:"));
+  if (!line) return;
+  const event = JSON.parse(line.slice(5).trim());
+  handleStreamEvent(event);
+}
+
+function handleStreamEvent(event) {
+  if (event.type === "Started" || event.type === "Running") {
+    setState(event.type);
+    appendTraceEvent(event.type, event.data && event.data.message);
+    return;
+  }
+  if (event.type === "Reasoning") {
+    const decision = (event.data && event.data.decision) || {};
+    const agents = decision.selected_agents || decision.selectedAgents || [];
+    elements.decisionLine.textContent = `${agents.join(" / ") || "no agent"}, confidence ${decision.confidence ?? "-"}`;
+    appendTraceEvent("Reasoning", decision.rationale || decision.intent || "decision ready");
+    return;
+  }
+  if (event.type === "ToolCall") {
+    const step = event.data && event.data.step;
+    if (step) appendTraceStep(step);
+    return;
+  }
+  if (event.type === "Source") {
+    const source = event.data && event.data.source;
+    appendTraceEvent("Source", source && (source.title || source.source || source.id));
+    return;
+  }
+  if (event.type === "Done" || event.type === "Error") {
+    const response = event.data && event.data.response;
+    if (response) {
+      state.lastResponse = response;
+      renderResponse(response, { preserveTrace: true });
+      setState(response.ok ? "Ready" : "Needs Review");
+    } else {
+      setState("Failed");
+      appendTraceEvent("Error", event.data && (event.data.error || "request failed"));
+    }
   }
 }
 
@@ -159,7 +239,7 @@ async function searchKnowledge() {
   }
 }
 
-function renderResponse(response) {
+function renderResponse(response, options = {}) {
   const decision = response.decision || {};
   const agents = decision.selected_agents || decision.selectedAgents || [];
   const issues = response.issues || [];
@@ -178,7 +258,9 @@ function renderResponse(response) {
 
   elements.draftOutput.textContent = pretty(compactOutput(response));
   elements.memoryOutput.textContent = pretty(response.memory || {});
-  renderTrace(response.results || []);
+  if (!options.preserveTrace) {
+    renderTrace(response.results || []);
+  }
   activateTab("draft");
 }
 
@@ -196,19 +278,36 @@ function renderTrace(results) {
   elements.traceList.innerHTML = "";
   for (const result of results) {
     for (const step of result.steps || []) {
-      const item = document.createElement("div");
-      item.className = "trace-item";
-      item.innerHTML = `
-        <div class="trace-head">
-          <span>${escapeHtml(step.agent)} / ${escapeHtml(step.action)}</span>
-          <span class="${step.status === "ok" ? "status-ok" : "status-error"}">${escapeHtml(step.status)}</span>
-        </div>
-        <p>${escapeHtml(step.thought || "")}</p>
-        <p>${escapeHtml(step.observation || "")}</p>
-      `;
-      elements.traceList.appendChild(item);
+      appendTraceStep(step);
     }
   }
+}
+
+function appendTraceStep(step) {
+  const item = document.createElement("div");
+  item.className = "trace-item";
+  item.innerHTML = `
+    <div class="trace-head">
+      <span>${escapeHtml(step.agent)} / ${escapeHtml(step.action)}</span>
+      <span class="${step.status === "ok" ? "status-ok" : "status-error"}">${escapeHtml(step.status)}</span>
+    </div>
+    <p>${escapeHtml(step.thought || "")}</p>
+    <p>${escapeHtml(step.observation || "")}</p>
+  `;
+  elements.traceList.appendChild(item);
+}
+
+function appendTraceEvent(label, text) {
+  const item = document.createElement("div");
+  item.className = "trace-item";
+  item.innerHTML = `
+    <div class="trace-head">
+      <span>${escapeHtml(label)}</span>
+      <span class="status-ok">ok</span>
+    </div>
+    <p>${escapeHtml(text || "")}</p>
+  `;
+  elements.traceList.appendChild(item);
 }
 
 function renderKnowledge(response) {

@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List
 
+from .business_object_resolver import BusinessObjectResolver
 from ..models import AgentResult, AgentStep, JsonDict, Tool
 from ..react import AgentContext, ReActAgent
 
@@ -40,7 +41,23 @@ LANGUAGE_ALIASES = {
     "阿拉伯": "ar_SA",
 }
 
+LANGUAGE_ALIASES.update(
+    {
+        "id": "id_ID",
+        "id_id": "id_ID",
+        "id-id": "id_ID",
+        "indonesian": "id_ID",
+        "\u5370\u5c3c": "id_ID",
+        "\u5370\u5c3c\u8bed": "id_ID",
+        "\u5370\u5c3c\u6587": "id_ID",
+    }
+)
+
 LANGUAGE_HINTS = (
+    ("\u5370\u5c3c\u8bed", "id_ID"),
+    ("\u5370\u5c3c\u6587", "id_ID"),
+    ("\u5370\u5c3c", "id_ID"),
+    ("indonesian", "id_ID"),
     ("阿拉伯语", "ar_SA"),
     ("阿拉伯文", "ar_SA"),
     ("阿拉伯", "ar_SA"),
@@ -67,6 +84,7 @@ SCOPE_KEYS = (
     "transId",
     "uri",
     "srcType",
+    "businessObjectCode",
 )
 
 TEMPLATE_LIST_KEYS = ("templates", "templateList", "templateDetails", "sourceTemplates")
@@ -88,10 +106,38 @@ class TemplateAgent(ReActAgent):
                 "Add a missing target-language version to templates in a scope.",
                 lambda payload: self._sync_language(context, payload),
             ),
+            "domain.tree.get": Tool(
+                "domain.tree.get",
+                "Fetch the full domain tree for business-object matching.",
+                lambda payload: self._get_domain_tree(context, payload),
+            ),
+            "business_object.resolve": Tool(
+                "business_object.resolve",
+                "Resolve a business object code from the fetched domain tree.",
+                lambda payload: self._resolve_business_object(context, payload),
+            ),
         }
 
     def plan(self, context: AgentContext) -> List[JsonDict]:
         payload = _normalize_request(context, _template_payload(context))
+        if _needs_business_object_resolution(payload):
+            return [
+                {
+                    "thought": "Fetch the complete domain tree before matching the requested business object.",
+                    "tool": "domain.tree.get",
+                    "input": payload,
+                },
+                {
+                    "thought": "Resolve the business object name to a platform business object code.",
+                    "tool": "business_object.resolve",
+                    "input": payload,
+                },
+                {
+                    "thought": "Use the resolved business object code to sync missing target-language template versions.",
+                    "tool": "template.sync_language",
+                    "input": payload,
+                },
+            ]
         if _is_batch_sync_request(payload, context.request.text):
             return [
                 {
@@ -117,6 +163,32 @@ class TemplateAgent(ReActAgent):
         ok = all(item.get("ok", True) for item in observations) and not any(issue.get("severity") == "error" for issue in issues)
         return AgentResult(agent=self.name, ok=ok, output=output, issues=issues, steps=steps)
 
+    def _get_domain_tree(self, context: AgentContext, payload: JsonDict) -> JsonDict:
+        _trace(context, "\u8bc6\u522b\u6a21\u677f\u7ffb\u8bd1\u540c\u6b65\u4efb\u52a1")
+        _trace(context, "\u8c03\u7528\u9886\u57df\u6811 MCP")
+        response = context.platform.get_domain_tree(payload, dry_run=context.request.dry_run)
+        tree = _extract_domain_tree(response)
+        context.scratch["domainTreeResponse"] = response
+        context.scratch["domainTree"] = tree
+        return {
+            "ok": bool(response.get("ok", True)),
+            "summary": f"domain tree fetched with {len(tree)} root node(s)",
+            "tree": tree,
+            "domainTreeResponse": response,
+            "executionTrace": list(context.scratch.get("templateExecutionTrace") or []),
+        }
+
+    def _resolve_business_object(self, context: AgentContext, payload: JsonDict) -> JsonDict:
+        payload = _normalize_request(context, payload)
+        name = str(payload.get("businessObject") or payload.get("businessObjectName") or "")
+        _trace(context, f"\u8bc6\u522b\u4e1a\u52a1\u5bf9\u8c61\uff1a{name}")
+        tree = payload.get("tree") if isinstance(payload.get("tree"), list) else context.scratch.get("domainTree") or []
+        result = BusinessObjectResolver(context.llm).resolve(name, tree)
+        if result.get("ok"):
+            _trace(context, "\u5339\u914d\u4e1a\u52a1\u5bf9\u8c61\u7f16\u7801")
+            context.scratch["businessObjectResolution"] = result
+        return {**result, "executionTrace": list(context.scratch.get("templateExecutionTrace") or [])}
+
     def _translate(self, context: AgentContext, payload: JsonDict) -> JsonDict:
         payload = _normalize_request(context, payload)
         scope = _scope_payload(payload)
@@ -136,6 +208,21 @@ class TemplateAgent(ReActAgent):
 
     def _sync_language(self, context: AgentContext, payload: JsonDict) -> JsonDict:
         payload = _normalize_request(context, payload)
+        _trace(context, "\u8bc6\u522b\u6a21\u677f\u7ffb\u8bd1\u540c\u6b65\u4efb\u52a1")
+        resolution = _business_object_resolution(context, payload)
+        if resolution.get("ambiguous"):
+            return {
+                "ok": False,
+                "summary": "Multiple business object candidates require user confirmation.",
+                "businessObjectCandidates": resolution.get("candidates") or [],
+                "issues": resolution.get("issues") or [],
+                "executionTrace": list(context.scratch.get("templateExecutionTrace") or []),
+            }
+        if resolution.get("ok"):
+            payload.setdefault("businessObjectCode", resolution.get("businessObjectCode"))
+            payload.setdefault("documentId", resolution.get("documentId"))
+            payload.setdefault("msgDocumentId", resolution.get("documentId"))
+            _trace(context, "\u5339\u914d\u4e1a\u52a1\u5bf9\u8c61\u7f16\u7801")
         scope = _scope_payload(payload)
         issues: List[JsonDict] = []
         translated_templates: List[JsonDict] = []
@@ -145,6 +232,7 @@ class TemplateAgent(ReActAgent):
         templates = _candidate_templates(payload)
         list_response: JsonDict | None = None
         if not templates:
+            _trace(context, "\u83b7\u53d6\u6a21\u677f\u5217\u8868")
             list_response = context.platform.find_templates(scope, dry_run=context.request.dry_run)
             templates = _extract_template_candidates(list_response)
 
@@ -196,6 +284,7 @@ class TemplateAgent(ReActAgent):
                 )
                 continue
 
+            _trace(context, "\u4fdd\u5b58\u76ee\u6807\u8bed\u79cd\u6a21\u677f")
             save_response = context.platform.save_template(translated["platformPayload"], dry_run=context.request.dry_run)
             translated_templates.append(
                 {
@@ -205,6 +294,7 @@ class TemplateAgent(ReActAgent):
                     "sourceLanguage": translated["sourceLanguage"],
                     "targetLanguage": translated["targetLanguage"],
                     "translatedContentCount": len(translated.get("translatedContents") or []),
+                    "savePreview": translated.get("savePreview") or [],
                     "platformPayload": translated["platformPayload"],
                     "saveResponse": save_response,
                 }
@@ -222,6 +312,8 @@ class TemplateAgent(ReActAgent):
             "failedTemplates": failed_templates,
             "templateListResponse": list_response or {},
             "issues": issues,
+            "businessObject": resolution if resolution.get("ok") else {},
+            "executionTrace": list(context.scratch.get("templateExecutionTrace") or []),
         }
 
 
@@ -246,6 +338,10 @@ def _template_payload(context: AgentContext) -> JsonDict:
         "syncAll",
         "batch",
         "batchSync",
+        "businessObject",
+        "businessObjectName",
+        "business_object",
+        "business_object_name",
         *SCOPE_KEYS,
     ):
         if key in raw_payload and key not in payload:
@@ -256,6 +352,7 @@ def _template_payload(context: AgentContext) -> JsonDict:
     if isinstance(payload.get("scope"), dict):
         for key, value in payload["scope"].items():
             payload.setdefault(key, value)
+    payload.setdefault("businessObject", _detect_business_object(context.request.text))
     return payload
 
 
@@ -271,6 +368,13 @@ def _normalize_request(context: AgentContext, payload: JsonDict) -> JsonDict:
     source_language = normalized.get("sourceLanguage") or normalized.get("source_language") or normalized.get("baseLanguage") or DEFAULT_SOURCE_LANGUAGE
     normalized["targetLanguage"] = normalize_language_code(target_language, "en_US")
     normalized["sourceLanguage"] = normalize_language_code(source_language, DEFAULT_SOURCE_LANGUAGE)
+    normalized["businessObject"] = (
+        normalized.get("businessObject")
+        or normalized.get("businessObjectName")
+        or normalized.get("business_object")
+        or normalized.get("business_object_name")
+        or _detect_business_object(context.request.text)
+    )
     return normalized
 
 
@@ -318,6 +422,9 @@ def _scope_payload(payload: JsonDict) -> JsonDict:
     if scope.get("billNo") and not scope.get("documentId"):
         scope["documentId"] = scope["billNo"]
         scope["msgDocumentId"] = scope["billNo"]
+    if scope.get("businessObjectCode") and not scope.get("documentId"):
+        scope["documentId"] = scope["businessObjectCode"]
+        scope["msgDocumentId"] = scope["businessObjectCode"]
     if scope.get("templateTypeId") and not scope.get("msgTemplateTypeId"):
         scope["msgTemplateTypeId"] = scope["templateTypeId"]
     if scope.get("typeId") and not scope.get("msgTemplateTypeId"):
@@ -444,36 +551,43 @@ def _translate_detail(context: AgentContext, detail: JsonDict, payload: JsonDict
     if not contents:
         return _error_result("template.content.required", "Template content is required for translation.")
 
-    if _target_language_exists(message_temp, contents, target_language):
-        issue = {
-            "code": "template.language.exists",
-            "message": f"Template {_template_code(detail) or _template_name(detail) or _template_id(detail)} already has {target_language}; skipped.",
-            "severity": "warning",
-        }
-        return {
-            "ok": True,
-            "status": "skipped",
-            "summary": "target language already exists",
-            "targetLanguage": target_language,
-            "sourceLanguage": requested_source,
-            "issues": [issue],
-        }
-
-    source_items, source_language = _source_content_items(contents, requested_source)
+    _trace(context, "\u68c0\u67e5\u901a\u9053\u914d\u7f6e")
+    source_items = _source_content_items(contents, requested_source, target_language)
     issues: List[JsonDict] = []
-    if source_language != requested_source:
+    for skipped in source_items["skipped"]:
+        issues.append(
+            {
+                "code": "template.language.exists",
+                "message": f"\u6a21\u677f\u3010{_template_name(detail) or _template_code(detail) or _template_id(detail)}\u3011\u7684\u3010{skipped['channelType']}\u3011\u901a\u9053\u5df2\u5b58\u5728{target_language}\u7248\u672c\uff0c\u8df3\u8fc7\u540c\u6b65\u3002",
+                "severity": "warning",
+                "channelType": skipped["channelType"],
+            }
+        )
+    if source_items["fallbackLanguage"] and source_items["fallbackLanguage"] != requested_source:
         issues.append(
             {
                 "code": "template.source_language.fallback",
-                "message": f"Source language {requested_source} was not found; used {source_language} instead.",
+                "message": f"Source language {requested_source} was not found for at least one channel; used available configured language instead.",
                 "severity": "warning",
             }
         )
-    if not source_items:
+    _trace(context, "\u68c0\u67e5\u76ee\u6807\u8bed\u79cd\u662f\u5426\u5b58\u5728")
+    if not source_items["items"] and source_items["skipped"]:
+        return {
+            "ok": True,
+            "status": "skipped",
+            "summary": "target language already exists for all configured channels",
+            "targetLanguage": target_language,
+            "sourceLanguage": requested_source,
+            "issues": issues,
+        }
+    if not source_items["items"]:
         return _error_result("template.source_language.missing", f"No source content found for {requested_source}.")
 
+    _trace(context, "\u4fdd\u62a4\u53d8\u91cf\u548c\u5bcc\u6587\u672c")
+    _trace(context, "\u7ffb\u8bd1\u6a21\u677f")
     translated_contents: List[JsonDict] = []
-    for source_item in source_items:
+    for source_item, source_language in source_items["items"]:
         translated_item = context.llm.translate_template(source_item, target_language, source_language)
         translated_item["id"] = ""
         translated_item["language"] = target_language
@@ -483,11 +597,13 @@ def _translate_detail(context: AgentContext, detail: JsonDict, payload: JsonDict
         translated_item["variables"] = extract_variables(str(translated_item.get("content") or ""))
         translated_contents.append(translated_item)
 
+    source_language = source_items["sourceLanguage"]
     translated_message_temp = _translate_message_temp(context, message_temp, source_language, target_language)
     platform_payload = {
         "messageTemplateContentVOList": contents + translated_contents,
         "messageTempVO": translated_message_temp,
     }
+    save_preview = _save_preview(detail, translated_message_temp, translated_contents, target_language)
     return {
         "ok": True,
         "status": "translated",
@@ -498,6 +614,7 @@ def _translate_detail(context: AgentContext, detail: JsonDict, payload: JsonDict
         "sourceLanguage": source_language,
         "targetLanguage": target_language,
         "translatedContents": translated_contents,
+        "savePreview": save_preview,
         "platformPayload": platform_payload,
         "issues": issues,
     }
@@ -513,28 +630,34 @@ def _message_contents(detail: JsonDict) -> List[JsonDict]:
     return copy.deepcopy(contents) if isinstance(contents, list) else []
 
 
-def _target_language_exists(message_temp: JsonDict, contents: List[JsonDict], target_language: str) -> bool:
-    for item in contents:
-        if normalize_language_code(item.get("language")) == target_language:
-            return True
-    language_dict = message_temp.get("languageDict") if isinstance(message_temp.get("languageDict"), dict) else {}
-    for key in ("templateName", "description"):
-        entries = language_dict.get(key)
-        if isinstance(entries, dict) and _language_value(entries, target_language):
-            return True
-    return False
-
-
-def _source_content_items(contents: List[JsonDict], source_language: str) -> tuple[List[JsonDict], str]:
+def _source_content_items(contents: List[JsonDict], source_language: str, target_language: str) -> JsonDict:
     normalized_source = normalize_language_code(source_language, DEFAULT_SOURCE_LANGUAGE)
-    matches = [item for item in contents if normalize_language_code(item.get("language")) == normalized_source]
-    if matches:
-        return matches, normalized_source
+    by_channel: dict[str, list[JsonDict]] = {}
     for item in contents:
-        fallback = normalize_language_code(item.get("language"))
-        if fallback:
-            return [candidate for candidate in contents if normalize_language_code(candidate.get("language")) == fallback], fallback
-    return contents, normalized_source
+        channel = _channel_type(item)
+        if channel:
+            by_channel.setdefault(channel, []).append(item)
+
+    selected: list[tuple[JsonDict, str]] = []
+    skipped: list[JsonDict] = []
+    fallback_language = ""
+    for channel, channel_items in by_channel.items():
+        if any(normalize_language_code(item.get("language")) == target_language for item in channel_items):
+            skipped.append({"channelType": channel})
+            continue
+        source_item = next((item for item in channel_items if normalize_language_code(item.get("language")) == normalized_source), None)
+        item_language = normalized_source
+        if source_item is None:
+            source_item = channel_items[0]
+            item_language = normalize_language_code(source_item.get("language"), normalized_source)
+            fallback_language = fallback_language or item_language
+        selected.append((source_item, item_language))
+    return {
+        "items": selected,
+        "skipped": skipped,
+        "sourceLanguage": selected[0][1] if selected else normalized_source,
+        "fallbackLanguage": fallback_language,
+    }
 
 
 def _translate_message_temp(context: AgentContext, message_temp: JsonDict, source_language: str, target_language: str) -> JsonDict:
@@ -568,6 +691,29 @@ def _language_value(entries: JsonDict, language: str) -> str:
         elif value:
             return str(value)
     return ""
+
+
+def _channel_type(item: JsonDict) -> str:
+    return str(item.get("channelType") or item.get("channel") or item.get("type") or "").strip()
+
+
+def _save_preview(detail: JsonDict, message_temp: JsonDict, contents: List[JsonDict], target_language: str) -> List[JsonDict]:
+    template_names = {}
+    language_dict = message_temp.get("languageDict") if isinstance(message_temp.get("languageDict"), dict) else {}
+    if isinstance(language_dict.get("templateName"), dict):
+        template_names = language_dict["templateName"]
+    translated_name = _language_value(template_names, target_language) or _template_name(detail)
+    return [
+        {
+            "templateId": _template_id(detail),
+            "channel": _channel_type(item),
+            "language": target_language,
+            "templateName": translated_name,
+            "templateTitle": str(item.get("title") or ""),
+            "templateContent": str(item.get("content") or ""),
+        }
+        for item in contents
+    ]
 
 
 def _template_id(template: object) -> str:
@@ -609,6 +755,76 @@ def _unwrap_platform_data(value: object) -> object:
     return value
 
 
+def _extract_domain_tree(response: JsonDict) -> List[JsonDict]:
+    data = response.get("tree") if isinstance(response, dict) else None
+    if isinstance(data, list):
+        return data
+    data = _unwrap_platform_data(response)
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        children = data.get("children")
+        if isinstance(children, list):
+            return [item for item in children if isinstance(item, dict)]
+        tree = data.get("tree")
+        if isinstance(tree, list):
+            return [item for item in tree if isinstance(item, dict)]
+        return [data]
+    return []
+
+
+def _needs_business_object_resolution(payload: JsonDict) -> bool:
+    return bool(payload.get("businessObject") and not (payload.get("businessObjectCode") or payload.get("documentId")))
+
+
+def _business_object_resolution(context: AgentContext, payload: JsonDict) -> JsonDict:
+    cached = context.scratch.get("businessObjectResolution")
+    if isinstance(cached, dict) and cached.get("ok"):
+        return cached
+    if not payload.get("businessObject"):
+        return {}
+    tree = context.scratch.get("domainTree")
+    if not isinstance(tree, list):
+        response = context.platform.get_domain_tree(payload, dry_run=context.request.dry_run)
+        tree = _extract_domain_tree(response)
+        context.scratch["domainTree"] = tree
+        _trace(context, "\u8c03\u7528\u9886\u57df\u6811 MCP")
+    result = BusinessObjectResolver(context.llm).resolve(str(payload.get("businessObject") or ""), tree)
+    if result.get("ok"):
+        context.scratch["businessObjectResolution"] = result
+    return result
+
+
+def _trace(context: AgentContext, message: str) -> None:
+    trace = context.scratch.setdefault("templateExecutionTrace", [])
+    if message and message not in trace:
+        trace.append(message)
+
+
+def _detect_business_object(text: str) -> str:
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    patterns = (
+        r"\u5c06(.+?)\u4e0b\u7684.*?\u6a21\u677f.*?\u540c\u6b65",
+        r"(.+?)\u4e0b\u7684.*?\u6a21\u677f.*?\u540c\u6b65",
+        r"\u540c\u6b65(.+?)\u4e0b\u7684.*?\u6a21\u677f",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return _clean_business_object_name(match.group(1))
+    return ""
+
+
+def _clean_business_object_name(value: str) -> str:
+    value = str(value or "").strip()
+    for prefix in ("\u5c06", "\u628a", "\u8bf7", "\u5e2e\u6211"):
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
+    return value.strip()
+
+
 def _error_result(code: str, message: str, extra: JsonDict | None = None) -> JsonDict:
     result: JsonDict = {
         "ok": False,
@@ -623,5 +839,6 @@ def _error_result(code: str, message: str, extra: JsonDict | None = None) -> Jso
 def extract_variables(text: str) -> List[str]:
     variables = re.findall(r"\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}", text)
     variables.extend(re.findall(r"\$\{\s*([a-zA-Z0-9_.-]+)\s*\}", text))
+    variables.extend(re.findall(r"#\{\s*([a-zA-Z0-9_.-]+)\s*\}", text))
     variables.extend(re.findall(r"\[(?:md|UIMD|OBJ)#([^\]]+)\]", text))
     return list(dict.fromkeys(variables))

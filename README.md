@@ -13,7 +13,7 @@
 ## Quick Start
 
 ```powershell
-docker compose up -d postgres
+docker compose up -d 
 $env:PYTHONPATH = "src"
 python -m unittest discover -s tests
 python -m message_platform_helper.cli demo

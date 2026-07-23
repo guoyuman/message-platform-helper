@@ -16,7 +16,7 @@ JsonDict = Dict[str, Any]
 
 AGENT_TOOLS = {
     "knowledge": ["knowledge.search", "knowledge.answer"],
-    "template": ["template.translate", "platform.template.save"],
+    "template": ["domain.tree.get", "business_object.resolve", "template.sync_language", "platform.template.save"],
     "business_config": ["business.build_payload", "platform.business.preview"],
     "channel_config": ["channel.infer_email", "platform.channel.save"],
     "send_strategy": ["strategy.build", "strategy.evaluate"],
@@ -196,6 +196,13 @@ class LLMClient:
     def complete_json(self, system: str, payload: JsonDict) -> JsonDict:
         raise NotImplementedError
 
+    def answer(self, text: str, system_prompt: str = "") -> JsonDict:
+        system = system_prompt or "Answer the user's chat message."
+        return self.complete_json(
+            f"{system} Return JSON with an answer field.",
+            {"text": text},
+        )
+
     def decide(self, text: str, hints: JsonDict) -> JsonDict:
         return self.complete_json(
             "Decide whether RAG retrieval is needed and which agents should run.",
@@ -224,7 +231,7 @@ class RuleBasedLLMClient(LLMClient):
         lowered = text.lower()
         if "Classify user intent" in system:
             decision = self._route(text, payload.get("payload") or {})
-            return {
+            result = {
                 "intent": decision.intent,
                 "request_type": decision.request_type,
                 "domain": decision.domain,
@@ -239,6 +246,10 @@ class RuleBasedLLMClient(LLMClient):
                 "searchQuery": text,
                 "labels": decision.labels,
             }
+            result.update(self._template_sync_metadata(text, payload.get("payload") or {}))
+            return result
+        if "Resolve a business object" in system:
+            return self._resolve_business_object(payload)
         if "Decide whether RAG" in system:
             hints = payload.get("hints") or {}
             decision = self._route(text, hints.get("payload") or {})
@@ -266,6 +277,8 @@ class RuleBasedLLMClient(LLMClient):
                 "profilePatch": self._profile_patch(text),
                 "factsPatch": self._facts_patch(text),
             }
+        if "answer field" in system or "Answer user chat" in system or "Answer the user's chat message" in system:
+            return {"ok": True, "answer": text, "source": "offline_rule_based"}
         return {"ok": True, "echo": payload, "note": lowered[:20]}
 
     def _route(self, text: str, payload: JsonDict) -> RoutingContext:
@@ -274,6 +287,10 @@ class RuleBasedLLMClient(LLMClient):
         domain = self._classify_domain(signals, payload)
         operation = self._classify_operation(signals, request_type)
         intent = self._intent_for(request_type, domain, operation)
+        if request_type == "action" and domain == "template" and operation == "execute" and (
+            "sync" in signals["lowered"] or "\u540c\u6b65" in text
+        ):
+            intent = "template_translation_sync"
         workflow = self._workflow_for(request_type, domain)
         agents = self._agents_for(request_type, domain, signals)
         tools = self._tools_for_agents(agents)
@@ -439,7 +456,7 @@ class RuleBasedLLMClient(LLMClient):
         return tools
 
     def _translate(self, template: JsonDict, target: str) -> JsonDict:
-        token_pattern = re.compile(r"(\{\{.*?\}\}|\$\{.*?\}|\[[a-zA-Z0-9_#:. -]+\])")
+        token_pattern = re.compile(r"(<[^>]+>|\{\{.*?\}\}|\$\{.*?\}|#\{.*?\}|\[[a-zA-Z0-9_#:. -]+\])")
 
         def protect(value: str) -> tuple[str, List[str]]:
             tokens = token_pattern.findall(value)
@@ -498,6 +515,37 @@ class RuleBasedLLMClient(LLMClient):
             "content": translate_text(str(template.get("content") or "")),
         }
 
+    def _template_sync_metadata(self, text: str, payload: JsonDict) -> JsonDict:
+        if "template" not in text.lower() and "\u6a21\u677f" not in text:
+            return {}
+        if "sync" not in text.lower() and "\u540c\u6b65" not in text:
+            return {}
+        business_object = _extract_between(text, "\u5c06", "\u4e0b") or _extract_before(text, "\u4e0b")
+        target_language = (
+            "\u5370\u5c3c\u8bed"
+            if "\u5370\u5c3c" in text
+            else "\u963f\u62c9\u4f2f\u8bed"
+            if "\u963f\u62c9\u4f2f" in text
+            else ""
+        )
+        return {
+            "businessObject": business_object,
+            "targetLanguage": target_language,
+            "operation": "sync",
+        }
+
+    def _resolve_business_object(self, payload: JsonDict) -> JsonDict:
+        name = str(payload.get("name") or "")
+        candidates = payload.get("candidates") or []
+        if not name or not isinstance(candidates, list):
+            return {"ok": False}
+        normalized = re.sub(r"[\s_\-:：/\\]+", "", name.lower())
+        for candidate in candidates:
+            candidate_name = str(candidate.get("businessObjectName") or "")
+            if re.sub(r"[\s_\-:：/\\]+", "", candidate_name.lower()) == normalized:
+                return {**candidate, "confidence": 1.0}
+        return {"ok": False}
+
     def _profile_patch(self, text: str) -> JsonDict:
         channels = self._channels(text)
         patch: JsonDict = {}
@@ -525,6 +573,11 @@ class OpenAICompatibleLLMClient(LLMClient):
     response_format: str = "json_object"
 
     def complete_json(self, system: str, payload: JsonDict) -> JsonDict:
+        if "Translate a message template" in system:
+            system = (
+                system
+                + " Preserve variables (${x}, {{x}}, #{x}) exactly. Preserve HTML tags, attributes, URLs, table structure, line breaks, and rich-text structure exactly; translate only human-readable text."
+            )
         body = {
             "model": self.model,
             "messages": [
@@ -556,6 +609,20 @@ def build_llm(settings: Settings) -> LLMClient:
             response_format=settings.llm_response_format,
         )
     return RuleBasedLLMClient()
+
+
+def _extract_between(text: str, start: str, end: str) -> str:
+    if start not in text or end not in text:
+        return ""
+    value = text.split(start, 1)[1].split(end, 1)[0]
+    return value.strip()
+
+
+def _extract_before(text: str, marker: str) -> str:
+    if marker not in text:
+        return ""
+    value = text.split(marker, 1)[0]
+    return value.strip()
 
 
 def describe_llm(client: LLMClient, settings: Settings) -> JsonDict:

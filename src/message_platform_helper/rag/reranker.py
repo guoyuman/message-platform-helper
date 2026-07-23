@@ -34,7 +34,18 @@ class CrossEncoderReranker:
 
 
 def _query_terms(query: str) -> list[str]:
-    return [part.lower() for part in re.findall(r"[a-zA-Z0-9_.#/-]+|[\u4e00-\u9fff]{2,}", query or "")]
+    terms: list[str] = []
+    for part in re.findall(r"[a-zA-Z0-9_.#/-]+|[\u4e00-\u9fff]{2,}", query or ""):
+        lowered = part.lower()
+        terms.append(lowered)
+        if re.fullmatch(r"[\u4e00-\u9fff]{4,}", part):
+            terms.extend(_char_ngrams(lowered, 2))
+            terms.extend(_char_ngrams(lowered, 3))
+    return list(dict.fromkeys(terms))
+
+
+def _char_ngrams(text: str, size: int) -> list[str]:
+    return [text[index : index + size] for index in range(0, max(len(text) - size + 1, 0))]
 
 
 def _rule_score(chunk: KnowledgeChunk, terms: list[str]) -> float:

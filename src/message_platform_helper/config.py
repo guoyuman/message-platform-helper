@@ -62,7 +62,9 @@ def load_settings() -> Settings:
         or _string_value(model_config, "model")
         or "gpt-4.1-mini"
     )
-    llm_provider = os.environ.get("MESSAGE_HELPER_LLM_PROVIDER") or _string_value(model_config, "provider") or "offline_rule_based"
+    llm_provider = os.environ.get("MESSAGE_HELPER_LLM_PROVIDER") or _string_value(model_config, "provider")
+    if not llm_provider:
+        llm_provider = "openai_compatible" if llm_base_url and llm_api_key else "offline_rule_based"
     return Settings(
         data_dir=data_dir,
         data_dir_explicit=bool(data_dir_raw),

@@ -38,6 +38,7 @@ class LLMIntentClassifier:
                     "error_code",
                     "workflow",
                     "translation",
+                    "template_translation_sync",
                     "summary",
                     "casual_chat",
                 ],

@@ -17,6 +17,7 @@ DEFAULT_INTENT_WORKFLOWS = {
     "template_config": "template_workflow",
     "business_config": "implementation_workflow",
     "translation": "template_workflow",
+    "template_translation_sync": "template_workflow",
     "implementation": "implementation_workflow",
     "error_code": "knowledge_answer",
     "workflow": "message_platform_workflow",

@@ -14,6 +14,7 @@ DEFAULT_RAG_INTENTS = {
     "error_code": True,
     "workflow": True,
     "translation": False,
+    "template_translation_sync": False,
     "summary": False,
     "casual_chat": False,
 }

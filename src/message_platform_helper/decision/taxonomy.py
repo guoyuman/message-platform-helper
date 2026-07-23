@@ -19,6 +19,7 @@ LEGACY_INTENT_AXES: dict[str, tuple[str, str, str]] = {
     "error_code": ("query", "error_code", "explain"),
     "workflow": ("action", "implementation", "execute"),
     "translation": ("action", "template", "execute"),
+    "template_translation_sync": ("action", "template", "execute"),
     "summary": ("chat", "general", "query"),
     "casual_chat": ("chat", "general", "query"),
 }
@@ -33,7 +34,7 @@ DOMAIN_AGENT_HINTS = {
 
 DOMAIN_TOOL_HINTS = {
     "business_message": ["business.build_payload", "platform.business.preview"],
-    "template": ["template.translate", "platform.template.save"],
+    "template": ["domain.tree.get", "business_object.resolve", "template.sync_language", "platform.template.save"],
     "channel": ["channel.infer_email", "platform.channel.save"],
     "send_strategy": ["strategy.build", "strategy.evaluate"],
     "error_code": ["knowledge.search", "knowledge.answer"],
