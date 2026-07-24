@@ -1,14 +1,14 @@
 # Message Platform Helper
 
-`message-platform-helper` 是消息平台的多 Agent 编排层，用于把模板翻译同步、业务消息配置、邮件通道配置、发送策略配置和知识库问答串成可审计的助手流程。
+`message-platform-helper` 是消息平台的多 Agent 编排层，用于把模板翻译同步、邮件通道配置和知识库问答串成可审计的助手流程。
 
 核心能力：
 
 - ReAct 编排：每个 Agent 按计划、工具调用、观察结果执行，保留审计轨迹。
-- 多 Agent 协作：模板、业务配置、通道配置、发送策略和知识问答由统一 Orchestrator 调度。
+- 多 Agent 协作：模板翻译同步、通道配置和知识问答由统一 Orchestrator 调度。
 - PostgreSQL 持久化：长期记忆、运行记录、频控计数、RAG 文档和向量统一写入 PostgreSQL。
 - RAG 知识库：支持 Markdown、文本、PDF、DOCX 入库，使用 PostgreSQL FTS + pgvector 混合检索。
-- 可上线边界：LLM、Redis、Java 消息平台和已有 `message-agent` 都通过环境变量接入。
+- LLM通过环境变量接入。
 
 ## Quick Start
 

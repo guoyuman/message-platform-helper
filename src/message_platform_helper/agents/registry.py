@@ -79,7 +79,6 @@ class AgentRegistry:
 
 
 def build_default_agent_registry(counter_store: CounterStore) -> AgentRegistry:
-    from .business_config import BusinessMessageConfigAgent
     from .channel_config import ChannelConfigAgent
     from .knowledge import KnowledgeAgent
     from .template import TemplateAgent
@@ -93,15 +92,6 @@ def build_default_agent_registry(counter_store: CounterStore) -> AgentRegistry:
             priority=20,
         ),
         TemplateAgent,
-    )
-    registry.register(
-        AgentSpec(
-            name="business_config",
-            description="Normalize and preview or publish business message configuration.",
-            capabilities=["business_message.configuration"],
-            priority=30,
-        ),
-        BusinessMessageConfigAgent,
     )
     registry.register(
         AgentSpec(
