@@ -90,4 +90,6 @@ def build_counter_store(database_url: str, redis_url: str = "") -> CounterStore:
             return RedisCounterStore(redis_url)
         except Exception:
             pass
-    return PostgresCounterStore(database_url)
+    if database_url and insert is not None:
+        return PostgresCounterStore(database_url)
+    return MemoryCounterStore({})

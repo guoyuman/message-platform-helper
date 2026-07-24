@@ -1,72 +1,61 @@
 """RAG package exports."""
 
-from .citation_builder import CitationBuilder
-from .chunker import ChunkStrategy, MarkdownChunkStrategy, ParentChildChunkStrategy, RecursiveChunkStrategy
-from .context_builder import ContextBuilder
-from .embedding import BGEEmbeddingProvider, DeterministicEmbeddingProvider, EmbeddingProvider, OpenAIEmbeddingProvider
-from .ingestion import DocumentIngestionPipeline, IngestionResult
-from .knowledge_base import (
-    KnowledgeBase,
-    KnowledgeDocument,
-    bm25_like,
-    load_default_knowledge_documents,
-    seed_default_knowledge,
-    split_text,
-    tokenize,
-)
-from .loader import DocumentLoader, LoaderFactory, MarkdownLoader
-from .models import Chunk, Document, DocumentMetadata, DocumentSection, ParentDocument
-from .parser import MarkdownParser
-from .prompt_builder import RagPromptBuilder
-from .query_analyzer import QueryAnalysis, QueryAnalyzer
-from .reranker import CrossEncoderReranker, Reranker, RuleBasedReranker, ScoreReranker
-from .retriever import KnowledgeBaseRetriever, Retriever
-from .retrieval import HybridRetriever, KeywordRetriever, VectorRetriever, reciprocal_rank_fusion
-from .service import RagService, build_postgres_rag_service, build_rag_service
+_EXPORT_MODULES = {
+    "CitationBuilder": ".citation_builder",
+    "BGEEmbeddingProvider": ".embedding",
+    "Chunk": ".models",
+    "ChunkStrategy": ".chunker",
+    "ContextBuilder": ".context_builder",
+    "CrossEncoderReranker": ".reranker",
+    "DeterministicEmbeddingProvider": ".embedding",
+    "Document": ".models",
+    "DocumentIngestionPipeline": ".ingestion",
+    "DocumentLoader": ".loader",
+    "DocumentMetadata": ".models",
+    "DocumentSection": ".models",
+    "EmbeddingProvider": ".embedding",
+    "HybridRetriever": ".retrieval",
+    "IngestionResult": ".ingestion",
+    "KeywordRetriever": ".retrieval",
+    "KnowledgeBase": ".knowledge_base",
+    "KnowledgeBaseRetriever": ".retriever",
+    "KnowledgeDocument": ".knowledge_base",
+    "LoaderFactory": ".loader",
+    "MarkdownChunkStrategy": ".chunker",
+    "MarkdownLoader": ".loader",
+    "MarkdownParser": ".parser",
+    "ParentChildChunkStrategy": ".chunker",
+    "ParentDocument": ".models",
+    "OpenAIEmbeddingProvider": ".embedding",
+    "QueryAnalysis": ".query_analyzer",
+    "QueryAnalyzer": ".query_analyzer",
+    "RagPromptBuilder": ".prompt_builder",
+    "RagService": ".service",
+    "Reranker": ".reranker",
+    "Retriever": ".retriever",
+    "RecursiveChunkStrategy": ".chunker",
+    "RuleBasedReranker": ".reranker",
+    "ScoreReranker": ".reranker",
+    "VectorRetriever": ".retrieval",
+    "bm25_like": ".knowledge_base",
+    "build_rag_service": ".service",
+    "build_postgres_rag_service": ".service",
+    "load_default_knowledge_documents": ".knowledge_base",
+    "seed_default_knowledge": ".knowledge_base",
+    "split_text": ".knowledge_base",
+    "tokenize": ".knowledge_base",
+    "reciprocal_rank_fusion": ".retrieval",
+}
 
-__all__ = [
-    "CitationBuilder",
-    "BGEEmbeddingProvider",
-    "Chunk",
-    "ChunkStrategy",
-    "ContextBuilder",
-    "CrossEncoderReranker",
-    "DeterministicEmbeddingProvider",
-    "Document",
-    "DocumentIngestionPipeline",
-    "DocumentLoader",
-    "DocumentMetadata",
-    "DocumentSection",
-    "EmbeddingProvider",
-    "HybridRetriever",
-    "IngestionResult",
-    "KeywordRetriever",
-    "KnowledgeBase",
-    "KnowledgeBaseRetriever",
-    "KnowledgeDocument",
-    "LoaderFactory",
-    "MarkdownChunkStrategy",
-    "MarkdownLoader",
-    "MarkdownParser",
-    "ParentChildChunkStrategy",
-    "ParentDocument",
-    "OpenAIEmbeddingProvider",
-    "QueryAnalysis",
-    "QueryAnalyzer",
-    "RagPromptBuilder",
-    "RagService",
-    "Reranker",
-    "Retriever",
-    "RecursiveChunkStrategy",
-    "RuleBasedReranker",
-    "ScoreReranker",
-    "VectorRetriever",
-    "bm25_like",
-    "build_rag_service",
-    "build_postgres_rag_service",
-    "load_default_knowledge_documents",
-    "seed_default_knowledge",
-    "split_text",
-    "tokenize",
-    "reciprocal_rank_fusion",
-]
+__all__ = list(_EXPORT_MODULES)
+
+
+def __getattr__(name: str):
+    if name not in _EXPORT_MODULES:
+        raise AttributeError(name)
+    from importlib import import_module
+
+    module = import_module(_EXPORT_MODULES[name], __name__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value

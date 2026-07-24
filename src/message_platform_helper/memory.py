@@ -9,7 +9,6 @@ from typing import Any, Dict, List
 
 from .llm import LLMClient
 from .models import ConversationMemory, JsonDict, UserProfile, deep_merge, now_ts, to_jsonable
-from .rag.db import HelperRunRecord, SessionMemoryRecord, build_session_factory
 
 
 class MemoryStore(ABC):
@@ -31,11 +30,12 @@ class PostgresMemoryStore(MemoryStore):
     database_url: str
 
     def __post_init__(self) -> None:
+        self._helper_run_record, self._session_memory_record, build_session_factory = _load_postgres_memory_store()
         self._factory = build_session_factory(self.database_url)
 
     def load(self, session_id: str) -> ConversationMemory:
         with self._factory() as session:
-            record = session.get(SessionMemoryRecord, session_id)
+            record = session.get(self._session_memory_record, session_id)
             if record is None:
                 return ConversationMemory(session_id=session_id)
             return memory_from_dict(dict(record.memory_json or {}))
@@ -44,9 +44,9 @@ class PostgresMemoryStore(MemoryStore):
         memory.updated_at = now_ts()
         payload = to_jsonable(memory)
         with self._factory() as session:
-            record = session.get(SessionMemoryRecord, memory.session_id)
+            record = session.get(self._session_memory_record, memory.session_id)
             if record is None:
-                record = SessionMemoryRecord(session_id=memory.session_id)
+                record = self._session_memory_record(session_id=memory.session_id)
                 session.add(record)
             record.memory_json = payload
             session.commit()
@@ -54,14 +54,14 @@ class PostgresMemoryStore(MemoryStore):
 
     def clear(self, session_id: str) -> None:
         with self._factory() as session:
-            record = session.get(SessionMemoryRecord, session_id)
+            record = session.get(self._session_memory_record, session_id)
             if record is not None:
                 session.delete(record)
                 session.commit()
 
     def save_run(self, session_id: str, request: JsonDict, response: JsonDict) -> int:
         with self._factory() as session:
-            record = HelperRunRecord(session_id=session_id, request_json=request, response_json=response)
+            record = self._helper_run_record(session_id=session_id, request_json=request, response_json=response)
             session.add(record)
             session.commit()
             return int(record.id)
@@ -203,4 +203,20 @@ def build_memory_store(database_url: str, redis_url: str = "") -> MemoryStore:
             return RedisMemoryStore(redis_url)
         except Exception:
             pass
-    return PostgresMemoryStore(database_url)
+    if database_url and _has_sqlalchemy():
+        return PostgresMemoryStore(database_url)
+    return InMemoryMemoryStore({})
+
+
+def _has_sqlalchemy() -> bool:
+    try:
+        import sqlalchemy  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _load_postgres_memory_store():
+    from .rag.db import HelperRunRecord, SessionMemoryRecord, build_session_factory
+
+    return HelperRunRecord, SessionMemoryRecord, build_session_factory

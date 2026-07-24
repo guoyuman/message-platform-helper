@@ -17,8 +17,6 @@ from .llm import LLMClient, build_llm, describe_llm
 from .memory import MemoryManager, build_memory_store
 from .models import AgentResult, AssistantRequest, HelperResponse, JsonDict, KnowledgeChunk, to_jsonable
 from .platform import PlatformGateway
-from .rag import KnowledgeBase, RagService, build_postgres_rag_service, seed_default_knowledge
-from .rag.db import build_session_factory, rag_database_url
 from .rag.embedding import build_embedding_provider
 from .rate_limit import CounterStore, build_counter_store
 from .react import AgentContext, ReActAgent
@@ -31,11 +29,11 @@ class MessagePlatformHelper:
     settings: Settings
     llm: LLMClient
     memory_manager: MemoryManager
-    knowledge_base: KnowledgeBase
+    knowledge_base: object
     platform: PlatformGateway
     counter_store: CounterStore
     config_catalog: ConfigCatalog | None = None
-    rag_service: RagService | None = None
+    rag_service: object | None = None
     agent_registry: AgentRegistry | None = None
     tool_registry: ToolRegistry | None = None
     workflow_registry: WorkflowRegistry | None = None
@@ -50,8 +48,7 @@ class MessagePlatformHelper:
         if self.config_catalog and self.config_catalog.policies and self.tool_registry is not None:
             self.tool_registry.permission_policy = permission_policy_from_config(self.config_catalog.policies)
         if self.rag_service is None:
-            session = build_session_factory(self.knowledge_base.database_url)()
-            self.rag_service = build_postgres_rag_service(session, self.knowledge_base.embedding_provider)
+            self.rag_service = _build_rag_service(self.knowledge_base)
         if self.workflow_registry is None:
             self.workflow_registry = (
                 build_workflow_registry_from_config(self.config_catalog.workflows)
@@ -76,12 +73,11 @@ class MessagePlatformHelper:
     def from_env(cls) -> "MessagePlatformHelper":
         settings = load_settings()
         settings.data_dir.mkdir(parents=True, exist_ok=True)
-        database_url = settings.rag_database_url or rag_database_url()
+        database_url = settings.rag_database_url or _rag_database_url()
         llm = build_llm(settings)
         memory_store = build_memory_store(database_url, settings.redis_url)
         embedding_provider = build_embedding_provider()
-        kb = KnowledgeBase(database_url, embedding_provider=embedding_provider)
-        seed_default_knowledge(kb)
+        kb = _build_knowledge_base(database_url, embedding_provider)
         platform = PlatformGateway(
             platform_base_url=settings.platform_base_url,
             business_agent_url=settings.business_agent_url,
@@ -90,8 +86,7 @@ class MessagePlatformHelper:
         )
         counter_store = build_counter_store(database_url, settings.redis_url)
         config_catalog = load_platform_config(settings.config_dir)
-        session = build_session_factory(database_url)()
-        rag_service = build_postgres_rag_service(session, embedding_provider)
+        rag_service = _build_rag_service(kb)
         return cls(
             settings=settings,
             llm=llm,
@@ -262,6 +257,67 @@ class MessagePlatformHelper:
         store = self.memory_manager.store
         if hasattr(store, "save_run"):
             store.save_run(request.session_id, to_jsonable(request), to_jsonable(response))
+
+
+class _EmptyKnowledgeBase:
+    database_url = ""
+    embedding_provider = None
+    last_ingestion = None
+
+    def count(self) -> int:
+        return 0
+
+    def stats(self) -> JsonDict:
+        return {"database_url": "", "documents": 0, "chunks": 0}
+
+    def ingest_text(self, title: str, content: str, source: str = "manual", tags: List[str] | None = None, replace: bool = True) -> list[KnowledgeChunk]:
+        return []
+
+    def ingest_file(self, path: Path, tags: List[str] | None = None, replace: bool = True) -> list[KnowledgeChunk]:
+        return []
+
+
+class _EmptyRagService:
+    def retrieve(self, query: str, limit: int = 5, **kwargs) -> list[KnowledgeChunk]:
+        return []
+
+
+def _has_sqlalchemy() -> bool:
+    try:
+        import sqlalchemy  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _rag_database_url() -> str:
+    if not _has_sqlalchemy():
+        return ""
+    from .rag.db import rag_database_url
+
+    return rag_database_url()
+
+
+def _build_knowledge_base(database_url: str, embedding_provider) -> object:
+    if not database_url or not _has_sqlalchemy():
+        return _EmptyKnowledgeBase()
+    from .rag import KnowledgeBase, seed_default_knowledge
+
+    kb = KnowledgeBase(database_url, embedding_provider=embedding_provider)
+    seed_default_knowledge(kb)
+    return kb
+
+
+def _build_rag_service(knowledge_base: object) -> object:
+    database_url = str(getattr(knowledge_base, "database_url", "") or "")
+    embedding_provider = getattr(knowledge_base, "embedding_provider", None)
+    if not database_url or not _has_sqlalchemy():
+        return _EmptyRagService()
+    from .rag import build_postgres_rag_service
+    from .rag.db import build_session_factory
+
+    session = build_session_factory(database_url)()
+    return build_postgres_rag_service(session, embedding_provider)
 
 
 def request_from_payload(payload: JsonDict) -> AssistantRequest:
