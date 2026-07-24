@@ -82,9 +82,7 @@ def build_default_agent_registry(counter_store: CounterStore) -> AgentRegistry:
     from .business_config import BusinessMessageConfigAgent
     from .channel_config import ChannelConfigAgent
     from .knowledge import KnowledgeAgent
-    from .send_strategy import SendStrategyAgent
     from .template import TemplateAgent
-    from ..strategy import SendStrategyEvaluator
 
     registry = AgentRegistry()
     registry.register(
@@ -122,15 +120,6 @@ def build_default_agent_registry(counter_store: CounterStore) -> AgentRegistry:
             priority=10,
         ),
         KnowledgeAgent,
-    )
-    registry.register(
-        AgentSpec(
-            name="send_strategy",
-            description="Build, evaluate, and optionally save send strategy rules.",
-            capabilities=["send_strategy.configuration", "rate_limit.evaluation"],
-            priority=50,
-        ),
-        lambda: SendStrategyAgent(SendStrategyEvaluator(counter_store)),
     )
     return registry
 
