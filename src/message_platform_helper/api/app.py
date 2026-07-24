@@ -1,6 +1,9 @@
 """Optional FastAPI presentation layer."""
 
 import json
+import queue
+import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -12,6 +15,7 @@ from ..strategy import SendStrategyEvaluator
 HelperFactory = Callable[[], MessagePlatformHelper]
 APP_DIR = Path(__file__).resolve().parents[3]
 WEB_DIR = APP_DIR / "web"
+STREAM_KEEPALIVE_SECONDS = 10
 
 
 def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
@@ -51,11 +55,36 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
 
         def events():
             sequence = 1
+            started_at = time.perf_counter()
             yield _stream_event("Started", {"message": "request accepted"}, enriched, sequence)
             try:
                 sequence += 1
                 yield _stream_event("Running", {"message": "executing workflow"}, enriched, sequence)
-                response = helper.handle(request_from_payload(enriched))
+                result_queue: queue.Queue = queue.Queue(maxsize=1)
+
+                def run_helper():
+                    try:
+                        result_queue.put(("response", helper.handle(request_from_payload(enriched))))
+                    except Exception as exc:
+                        result_queue.put(("error", exc))
+
+                threading.Thread(target=run_helper, daemon=True).start()
+                while True:
+                    try:
+                        result_type, result = result_queue.get(timeout=STREAM_KEEPALIVE_SECONDS)
+                        break
+                    except queue.Empty:
+                        sequence += 1
+                        yield _stream_event(
+                            "Running",
+                            {"message": "executing workflow", "elapsedSeconds": round(time.perf_counter() - started_at, 1)},
+                            enriched,
+                            sequence,
+                        )
+                if result_type == "error":
+                    raise result
+
+                response = result
                 for event in response_to_streaming_events(response):
                     serialized = to_jsonable(event)
                     if serialized.get("type") in {"Done", "Error"}:
@@ -63,7 +92,17 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
                     yield "data: " + json.dumps(serialized, ensure_ascii=False) + "\n\n"
             except Exception as exc:
                 sequence += 1
-                yield _stream_event("Error", {"ok": False, "error": str(exc)}, enriched, sequence)
+                yield _stream_event(
+                    "Error",
+                    {
+                        "ok": False,
+                        "error": str(exc),
+                        "errorType": type(exc).__name__,
+                        "elapsedSeconds": round(time.perf_counter() - started_at, 1),
+                    },
+                    enriched,
+                    sequence,
+                )
 
         return StreamingResponse(events(), media_type="text/event-stream")
 

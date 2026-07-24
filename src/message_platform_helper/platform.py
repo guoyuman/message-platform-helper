@@ -50,7 +50,7 @@ class PlatformGateway:
             return {
                 "ok": True,
                 "status": 1,
-                "data": {"templates": stored} if stored else _mock_template_list(payload),
+                "data": {"templates": stored} if self.mock_database_url else _mock_template_list(payload),
                 "endpoint": "/msgTemplate/findMsgTemps",
                 "payload": payload,
             }
@@ -460,7 +460,7 @@ def _find_mock_template_snapshots(payload: JsonDict, database_url: str) -> list[
             rows = conn.execute(
                 text(
                     """
-                    SELECT payload
+                    SELECT payload, scope
                     FROM mock_template_snapshots
                     ORDER BY updated_at DESC
                     LIMIT 50
@@ -472,14 +472,37 @@ def _find_mock_template_snapshots(payload: JsonDict, database_url: str) -> list[
     result: list[JsonDict] = []
     for row in rows:
         payload_value = row[0]
+        scope_value = row[1] if len(row) > 1 else {}
         if isinstance(payload_value, str):
             try:
                 payload_value = json.loads(payload_value)
             except json.JSONDecodeError:
                 continue
-        if isinstance(payload_value, dict):
+        if isinstance(scope_value, str):
+            try:
+                scope_value = json.loads(scope_value)
+            except json.JSONDecodeError:
+                scope_value = {}
+        if isinstance(payload_value, dict) and _mock_template_scope_matches(payload, payload_value, scope_value):
             result.append(payload_value)
     return result
+
+
+def _mock_template_scope_matches(query: JsonDict, template_payload: JsonDict, template_scope: object) -> bool:
+    query_values = _mock_template_document_values(query)
+    if not query_values:
+        return False
+    candidate_values = _mock_template_document_values(template_payload)
+    if isinstance(template_scope, dict):
+        candidate_values.update(_mock_template_document_values(template_scope))
+    message_temp = template_payload.get("messageTempVO") if isinstance(template_payload.get("messageTempVO"), dict) else {}
+    candidate_values.update(_mock_template_document_values(message_temp))
+    return bool(candidate_values & query_values)
+
+
+def _mock_template_document_values(payload: JsonDict) -> set[str]:
+    keys = ("documentId", "msgDocumentId", "billNo", "billId", "businessObjectCode")
+    return {str(payload.get(key)).strip() for key in keys if payload.get(key) not in (None, "")}
 
 
 def _load_mock_template_snapshot(template_id: str, database_url: str) -> JsonDict:

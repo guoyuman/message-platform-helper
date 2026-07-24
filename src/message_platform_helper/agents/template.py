@@ -89,6 +89,59 @@ SCOPE_KEYS = (
 
 TEMPLATE_LIST_KEYS = ("templates", "templateList", "templateDetails", "sourceTemplates")
 
+MOCK_DOMAIN_TREE: List[JsonDict] = [
+    {
+        "nodeName": "供应链云",
+        "nodeCode": "supply-cloud",
+        "nodeId": "supply-cloud",
+        "nodeType": "supply-cloud",
+        "children": [
+            {
+                "nodeName": "采购供应",
+                "nodeCode": "purchase_supply",
+                "nodeId": "purchase_supply",
+                "nodeType": "domain",
+                "children": [
+                    {
+                        "nodeName": "采购管理",
+                        "nodeCode": "purchase_manage",
+                        "nodeId": "purchase_manage",
+                        "nodeType": "application",
+                        "domain": "purchase_supply",
+                        "appCode": "purchase_manage",
+                        "children": [
+                            {
+                                "nodeName": "采购订单",
+                                "nodeCode": "purchase_order",
+                                "nodeId": "purchase_order",
+                                "nodeType": "document",
+                                "domain": "purchase_supply",
+                                "appCode": "purchase_manage",
+                            },
+                            {
+                                "nodeName": "销售订单",
+                                "nodeCode": "sales_order",
+                                "nodeId": "sales_order",
+                                "nodeType": "document",
+                                "domain": "purchase_supply",
+                                "appCode": "purchase_manage",
+                            },
+                            {
+                                "nodeName": "库存调拨单",
+                                "nodeCode": "inventory_transfer",
+                                "nodeId": "inventory_transfer",
+                                "nodeType": "document",
+                                "domain": "purchase_supply",
+                                "appCode": "purchase_manage",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+]
+
 
 @dataclass
 class TemplateAgent(ReActAgent):
@@ -167,7 +220,7 @@ class TemplateAgent(ReActAgent):
         _trace(context, "\u8bc6\u522b\u6a21\u677f\u7ffb\u8bd1\u540c\u6b65\u4efb\u52a1")
         _trace(context, "\u8c03\u7528\u9886\u57df\u6811 MCP")
         response = context.platform.get_domain_tree(payload, dry_run=context.request.dry_run)
-        tree = _extract_domain_tree(response)
+        tree = _extract_domain_tree(response) or MOCK_DOMAIN_TREE
         context.scratch["domainTreeResponse"] = response
         context.scratch["domainTree"] = tree
         return {
@@ -223,6 +276,21 @@ class TemplateAgent(ReActAgent):
             payload.setdefault("documentId", resolution.get("documentId"))
             payload.setdefault("msgDocumentId", resolution.get("documentId"))
             _trace(context, "\u5339\u914d\u4e1a\u52a1\u5bf9\u8c61\u7f16\u7801")
+        elif payload.get("businessObject") and not (payload.get("documentId") or payload.get("msgDocumentId")):
+            return {
+                "ok": False,
+                "summary": resolution.get("summary") or "Business object could not be resolved.",
+                "issues": resolution.get("issues")
+                or [
+                    {
+                        "code": "business_object.not_resolved",
+                        "message": "Business object could not be resolved; refusing to query templates without a document id.",
+                        "severity": "error",
+                    }
+                ],
+                "businessObject": resolution,
+                "executionTrace": list(context.scratch.get("templateExecutionTrace") or []),
+            }
         scope = _scope_payload(payload)
         issues: List[JsonDict] = []
         translated_templates: List[JsonDict] = []
@@ -786,7 +854,7 @@ def _business_object_resolution(context: AgentContext, payload: JsonDict) -> Jso
     tree = context.scratch.get("domainTree")
     if not isinstance(tree, list):
         response = context.platform.get_domain_tree(payload, dry_run=context.request.dry_run)
-        tree = _extract_domain_tree(response)
+        tree = _extract_domain_tree(response) or MOCK_DOMAIN_TREE
         context.scratch["domainTree"] = tree
         _trace(context, "\u8c03\u7528\u9886\u57df\u6811 MCP")
     result = BusinessObjectResolver(context.llm).resolve(str(payload.get("businessObject") or ""), tree)

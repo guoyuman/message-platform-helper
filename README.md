@@ -17,7 +17,7 @@ docker compose up -d
 $env:PYTHONPATH = "src"
 python -m unittest discover -s tests
 python -m message_platform_helper.cli demo
-python -m message_platform_helper.cli serve --port 8790
+uvicorn src.message_platform_helper.api.app:create_app --reload --host 127.0.0.1 --port 8790
 ```
 
 打开页面：
