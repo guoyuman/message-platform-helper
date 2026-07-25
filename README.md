@@ -42,7 +42,8 @@ http://127.0.0.1:5173
 - `MESSAGE_HELPER_REDIS_URL`: 配置后优先使用 Redis 保存记忆缓存和频控计数。
 - `MESSAGE_HELPER_LLM_BASE_URL`, `MESSAGE_HELPER_LLM_API_KEY`, `MESSAGE_HELPER_LLM_MODEL`: OpenAI-compatible LLM。
 - `MESSAGE_HELPER_PLATFORM_BASE_URL`: Java 消息平台 HTTP 地址。
-- `MESSAGE_HELPER_BUSINESS_AGENT_URL`: 已有 `message-agent` 地址，例如 `http://127.0.0.1:8787`。
+
+[//]: # (- `MESSAGE_HELPER_BUSINESS_AGENT_URL`: 已有 `message-agent` 地址，例如 `http://127.0.0.1:8787`。)
 - `MESSAGE_HELPER_PLATFORM_HEADERS_JSON`: 透传给 Java 平台的租户、鉴权、网关 Header。
 - `MESSAGE_HELPER_EMBEDDING_PROVIDER`: `deterministic`、`openai` 或 `bge`。
 

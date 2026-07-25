@@ -9,7 +9,6 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY knowledge ./knowledge
 COPY config ./config
-COPY web ./web
 
 RUN pip install --no-cache-dir ".[server]"
 

@@ -59,6 +59,8 @@ DOMAIN_WORKFLOWS = {
 
 
 def normalize_axes(raw: JsonDict, text: str = "") -> JsonDict:
+    if _is_memory_recall_query(text):
+        return {"request_type": "chat", "domain": "general", "operation": "query"}
     intent = _string(raw, "intent") or "casual_chat"
     legacy_request_type, legacy_domain, legacy_operation = LEGACY_INTENT_AXES.get(intent, ("action", "implementation", "execute"))
     domain = _normalize_domain(_string(raw, "domain") or _string(raw, "businessDomain") or _string(raw, "business_domain") or _infer_domain(text) or legacy_domain)
@@ -259,3 +261,17 @@ def _infer_operation(text: str) -> str:
     if any(marker in lowered for marker in ("execute", "run", "sync", "translate")) or any(marker in text for marker in ("\u6267\u884c", "\u540c\u6b65", "\u7ffb\u8bd1")):
         return "execute"
     return ""
+
+
+def _is_memory_recall_query(text: str) -> bool:
+    if not text.strip():
+        return False
+    lowered = text.lower()
+    recall_markers = ("remember", "recall", "\u8fd8\u8bb0\u5f97", "\u8bb0\u5f97\u6211", "\u8bb0\u4e0d\u8bb0\u5f97", "\u4f60\u8bb0\u5f97", "\u4e4b\u524d", "\u4e0a\u6b21")
+    history_markers = ("i ", "me ", "my ", "\u6211", "\u4e4b\u524d", "\u4e0a\u6b21")
+    question_markers = ("what", "which", "\u54ea\u4e9b", "\u4ec0\u4e48", "\u591a\u5c11", "\u5417", "\u4e48", "?")
+    return (
+        any(marker in lowered or marker in text for marker in recall_markers)
+        and any(marker in lowered or marker in text for marker in history_markers)
+        and any(marker in lowered or marker in text for marker in question_markers)
+    )

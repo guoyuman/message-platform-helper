@@ -80,7 +80,6 @@ class MessagePlatformHelper:
         kb = _build_knowledge_base(database_url, embedding_provider)
         platform = PlatformGateway(
             platform_base_url=settings.platform_base_url,
-            business_agent_url=settings.business_agent_url,
             mock_database_url=database_url,
             headers=settings.platform_headers or {},
         )

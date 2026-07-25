@@ -10,7 +10,6 @@ from message_platform_helper.models import AssistantRequest, ConversationMemory
 from message_platform_helper.platform import PlatformGateway
 from message_platform_helper.rate_limit import MemoryCounterStore
 from message_platform_helper.react import AgentContext
-from message_platform_helper.strategy import SendStrategyEvaluator
 
 
 def sample_template_detail() -> dict:
@@ -192,19 +191,6 @@ class AgentUnitTests(unittest.TestCase):
         self.assertIn("{{userName}}", translated_uspace["content"])
         self.assertIn("检查目标语种是否存在", result.output["executionTrace"])
 
-    def test_strategy_frequency_blocks_after_limit(self) -> None:
-        strategy = build_strategy("每小时最多 1 次，只允许邮件通道", {})
-        evaluator = SendStrategyEvaluator(MemoryCounterStore({}))
-        first = evaluator.evaluate(strategy, {"channels": ["mail"], "receivers": ["u001"]})
-        second = evaluator.evaluate(strategy, {"channels": ["mail"], "receivers": ["u001"]})
-        self.assertTrue(first.allowed)
-        self.assertFalse(second.allowed)
-        self.assertIn("frequency", second.matched_rules)
-
-    def test_strategy_channel_limit_blocks_sms(self) -> None:
-        strategy = build_strategy("只允许邮件通道", {})
-        decision = SendStrategyEvaluator(MemoryCounterStore({})).evaluate(strategy, {"channels": ["sms"], "receivers": ["u001"]})
-        self.assertFalse(decision.allowed)
 
 
 if __name__ == "__main__":

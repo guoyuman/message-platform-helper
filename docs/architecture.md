@@ -15,7 +15,7 @@
 
 ```text
 Presentation Layer
-  api/                       FastAPI 可选入口，stdlib server 兼容入口
+  api/                       FastAPI 入口
 
 Application Layer
   application/               Streaming、安全上下文、权限策略
@@ -379,11 +379,6 @@ FastAPI 可选入口提供：
 
 ## 部署
 
-本地 stdlib server：
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m message_platform_helper.cli serve --port 8790
 ```
 
 FastAPI server：

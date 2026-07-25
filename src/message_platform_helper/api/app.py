@@ -7,9 +7,8 @@ import time
 from typing import Callable
 
 from ..application import response_to_streaming_events
-from ..models import SendStrategy, StrategyRule, to_jsonable
+from ..models import to_jsonable
 from ..orchestrator import MessagePlatformHelper, request_from_payload
-from ..strategy import SendStrategyEvaluator
 
 HelperFactory = Callable[[], MessagePlatformHelper]
 STREAM_KEEPALIVE_SECONDS = 10
@@ -149,19 +148,6 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
             tags=list(payload.get("tags") or []),
         )
 
-    @app.post("/api/strategy/evaluate")
-    async def strategy_evaluate(payload: dict):
-        strategy_payload = payload.get("strategy") or {}
-        strategy = SendStrategy(
-            name=str(strategy_payload.get("name") or "strategy"),
-            enabled=bool(strategy_payload.get("enabled", True)),
-            rules=[
-                StrategyRule(kind=str(rule["kind"]), config=dict(rule.get("config") or {}), enabled=bool(rule.get("enabled", True)))
-                for rule in strategy_payload.get("rules", [])
-            ],
-        )
-        decision = SendStrategyEvaluator(helper.counter_store).evaluate(strategy, payload.get("message") or {})
-        return {"ok": True, "decision": to_jsonable(decision)}
 
     return app
 

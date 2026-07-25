@@ -101,6 +101,29 @@ class DecisionWorkflowTests(unittest.TestCase):
         self.assertEqual(decision.selected_agents, ["business_config"])
         self.assertEqual(decision.selected_tools, ["business.build_payload", "platform.business.preview"])
 
+    def test_memory_recall_question_does_not_route_to_knowledge_query(self) -> None:
+        engine = self._engine(
+            IntentResult(
+                intent="knowledge_query",
+                request_type="query",
+                domain="template",
+                operation="explain",
+                confidence=0.82,
+            )
+        )
+
+        decision = engine.decide(
+            AssistantRequest(text="\u8fd8\u8bb0\u5f97\u6211\u540c\u6b65\u7ffb\u8bd1\u8fc7\u54ea\u4e9b\u5355\u636e\u7684\u6a21\u677f\u5417"),
+            ConversationMemory(session_id="s1"),
+        )
+
+        self.assertEqual(decision.request_type, "chat")
+        self.assertEqual(decision.intent, "casual_chat")
+        self.assertFalse(decision.need_rag)
+        self.assertEqual(decision.workflow, "general_chat")
+        self.assertEqual(decision.selected_agents, [])
+        self.assertEqual(decision.selected_tools, [])
+
     def test_rule_based_classifier_splits_business_query_and_action(self) -> None:
         workflows = build_default_workflow_registry()
         engine = DecisionEngine(

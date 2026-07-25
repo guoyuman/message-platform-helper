@@ -237,26 +237,3 @@ class EmailChannelConfig:
     smtp_tls: bool = True
     verify_user: str = ""
     default_status: int = 1
-
-
-@dataclass
-class StrategyRule:
-    kind: str
-    config: JsonDict
-    enabled: bool = True
-
-
-@dataclass
-class SendStrategy:
-    name: str
-    rules: List[StrategyRule] = field(default_factory=list)
-    enabled: bool = True
-    description: str = ""
-
-
-@dataclass
-class StrategyDecision:
-    allowed: bool
-    reasons: List[str] = field(default_factory=list)
-    delay_until: Optional[float] = None
-    matched_rules: List[str] = field(default_factory=list)
