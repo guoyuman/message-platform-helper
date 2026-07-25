@@ -48,6 +48,8 @@ class WorkflowRouter:
     intent_workflows: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_INTENT_WORKFLOWS))
 
     def route(self, intent: IntentResult, request: AssistantRequest, memory: ConversationMemory) -> str:
+        if intent.request_type == "chat":
+            return "general_chat"
         configured = intent.metadata.get("workflow") or intent.metadata.get("selectedWorkflow") or intent.metadata.get("selected_workflow")
         if configured:
             return str(configured)

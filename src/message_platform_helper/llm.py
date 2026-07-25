@@ -278,6 +278,9 @@ class RuleBasedLLMClient(LLMClient):
                 "factsPatch": self._facts_patch(text),
             }
         if "answer field" in system or "Answer user chat" in system or "Answer the user's chat message" in system:
+            memory_answer = self._memory_answer(system)
+            if memory_answer:
+                return {"ok": True, "answer": memory_answer, "source": "offline_rule_based"}
             return {"ok": True, "answer": text, "source": "offline_rule_based"}
         return {"ok": True, "echo": payload, "note": lowered[:20]}
 
@@ -337,6 +340,16 @@ class RuleBasedLLMClient(LLMClient):
             "is_empty": not text.strip() and not payload,
             "explicit_knowledge": bool(payload.get("../../knowledge")) or self._score(forms, lowered, KNOWLEDGE_PATTERNS) > 0,
         }
+
+    def _memory_answer(self, system: str) -> str:
+        if "operationHistory" not in system:
+            return ""
+        names = re.findall(r"'templateName': '([^']+)'", system)
+        codes = re.findall(r"'templateCode': '([^']+)'", system)
+        labels = names or codes
+        if not labels:
+            return ""
+        return "\u4f60\u540c\u6b65\u8fc7\u8fd9\u4e9b\u5355\u636e\u7684\u6a21\u677f\u7ffb\u8bd1\uff1a" + "\u3001".join(dict.fromkeys(labels))
 
     def _classify_request_type(self, signals: JsonDict, payload: JsonDict) -> str:
         if signals["is_empty"]:

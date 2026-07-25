@@ -66,6 +66,18 @@ class PostgresMemoryStore(MemoryStore):
             session.commit()
             return int(record.id)
 
+    def list_runs(self, session_id: str, limit: int = 20) -> list[JsonDict]:
+        from sqlalchemy import select
+
+        with self._factory() as session:
+            rows = session.execute(
+                select(self._helper_run_record.request_json, self._helper_run_record.response_json, self._helper_run_record.created_at)
+                .where(self._helper_run_record.session_id == session_id)
+                .order_by(self._helper_run_record.created_at.desc())
+                .limit(limit)
+            ).all()
+        return [{"request": dict(row[0] or {}), "response": dict(row[1] or {}), "created_at": str(row[2] or "")} for row in rows]
+
     def list_sessions(self) -> list[JsonDict]:
         from sqlalchemy import select
 
@@ -137,6 +149,10 @@ class InMemoryMemoryStore(MemoryStore):
             self.runs = []
         self.runs.append({"session_id": session_id, "request": request, "response": response, "created_at": now_ts()})
         return len(self.runs)
+
+    def list_runs(self, session_id: str, limit: int = 20) -> list[JsonDict]:
+        runs = [run for run in self.runs or [] if run.get("session_id") == session_id]
+        return list(reversed(runs))[:limit]
 
     def list_sessions(self) -> list[JsonDict]:
         return sorted(

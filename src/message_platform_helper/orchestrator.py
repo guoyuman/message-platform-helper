@@ -15,7 +15,7 @@ from .decision import KnowledgePolicy, WorkflowRouter
 from .infrastructure.observability import RequestMetrics, TraceContext, elapsed_ms, log_request_completed
 from .llm import LLMClient, build_llm, describe_llm
 from .memory import MemoryManager, build_memory_store
-from .models import AgentResult, AssistantRequest, HelperResponse, JsonDict, KnowledgeChunk, to_jsonable
+from .models import AgentResult, AssistantRequest, HelperResponse, JsonDict, KnowledgeChunk, deep_merge, to_jsonable
 from .platform import PlatformGateway
 from .rag.embedding import build_embedding_provider
 from .rate_limit import CounterStore, build_counter_store
@@ -137,8 +137,9 @@ class MessagePlatformHelper:
         results = self.workflow_executor.execute(decision.workflow, decision.selected_agents, context)
         metrics.tool_time_ms += elapsed_ms(started)
         if not results and decision.request_type == "chat":
+            memory = self._hydrate_memory_from_runs(memory)
             started = time.perf_counter()
-            answer = self.llm.answer(request.text)
+            answer = self.llm.answer(request.text, system_prompt=_chat_system_prompt(memory))
             metrics.model_time_ms += elapsed_ms(started)
             results = [
                 AgentResult(
@@ -169,7 +170,11 @@ class MessagePlatformHelper:
         self.memory_manager.remember_response(
             memory,
             response_summary=self._response_summary(results),
-            facts_patch={"lastAgents": decision.selected_agents, "lastOk": ok},
+
+            facts_patch=deep_merge(
+                {"lastAgents": decision.selected_agents, "lastOk": ok},
+                _operation_history_patch(request, decision, results),
+            ),
         )
         self._save_run(request, response)
         log_request_completed(
@@ -257,6 +262,37 @@ class MessagePlatformHelper:
         if hasattr(store, "save_run"):
             store.save_run(request.session_id, to_jsonable(request), to_jsonable(response))
 
+    def _hydrate_memory_from_runs(self, memory) -> object:
+        if memory.facts.get("operationHistory"):
+            return memory
+        list_runs = getattr(self.memory_manager.store, "list_runs", None)
+        if not callable(list_runs):
+            return memory
+        history: List[JsonDict] = []
+        for run in list_runs(memory.session_id, limit=20):
+            response = run.get("response") or {}
+            request = run.get("request") or {}
+            results = [
+                AgentResult(
+                    agent=str(result.get("agent") or ""),
+                    ok=bool(result.get("ok", True)),
+                    output=dict(result.get("output") or {}),
+                )
+                for result in response.get("results") or []
+            ]
+            decision = response.get("decision") or {}
+            history.extend(
+                _operation_history_patch(
+                    AssistantRequest(text=str(request.get("text") or ""), payload=dict(request.get("payload") or {})),
+                    decision,
+                    results,
+                ).get("operationHistory") or []
+            )
+        if history:
+            memory.facts = deep_merge(memory.facts, {"operationHistory": history[-20:]})
+            return self.memory_manager.store.save(memory)
+        return memory
+
 
 class _EmptyKnowledgeBase:
     database_url = ""
@@ -317,6 +353,64 @@ def _build_rag_service(knowledge_base: object) -> object:
 
     session = build_session_factory(database_url)()
     return build_postgres_rag_service(session, embedding_provider)
+
+
+def _chat_system_prompt(memory) -> str:
+    return (
+        "Answer the user's chat message using the provided conversation memory. "
+        "If the user asks what happened before, use memory.summary, memory.facts, and memory.recent_messages. "
+        "Do not claim you lack memory when relevant memory is provided. "
+        f"memory={to_jsonable(memory)}"
+    )
+
+
+def _operation_history_patch(request: AssistantRequest, decision, results: List[AgentResult]) -> JsonDict:
+    entries: List[JsonDict] = []
+    for result in results:
+        if result.agent == "chat":
+            continue
+        output = dict(result.output or {})
+        entries.append(
+            {
+                "agent": result.agent,
+                "ok": result.ok,
+                "workflow": _decision_value(decision, "workflow"),
+                "intent": _decision_value(decision, "intent"),
+                "requestText": request.text,
+                "requestPayload": _compact_value(request.payload),
+                "summary": output.get("summary") or "",
+                "details": _compact_value(output),
+            }
+        )
+    return {"operationHistory": entries[-20:]} if entries else {}
+
+
+def _decision_value(decision, key: str) -> object:
+    if isinstance(decision, dict):
+        return decision.get(key) or decision.get(key.replace("_", ""))
+    return getattr(decision, key, "")
+
+
+def _compact_value(value: object, depth: int = 0) -> object:
+    if depth >= 4:
+        return _brief(value)
+    if isinstance(value, dict):
+        result: JsonDict = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in {"platformPayload", "saveResponse", "templateListResponse", "executionTrace", "content", "raw", "templateContent"}:
+                continue
+            result[key_text] = _compact_value(item, depth + 1)
+        return result
+    if isinstance(value, list):
+        return [_compact_value(item, depth + 1) for item in value[:10]]
+    return _brief(value)
+
+
+def _brief(value: object) -> object:
+    if isinstance(value, str) and len(value) > 300:
+        return value[:300]
+    return value
 
 
 def request_from_payload(payload: JsonDict) -> AssistantRequest:

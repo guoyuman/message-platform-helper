@@ -107,6 +107,98 @@ class OrchestratorTests(unittest.TestCase):
         answer = response.results[0].output.get("answer", "")
         self.assertIn("排查", answer)
 
+    def test_chat_recall_uses_operation_history_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            llm = RuleBasedLLMClient()
+            kb = InMemoryKnowledgeBase()
+            helper = MessagePlatformHelper(
+                settings=Settings(data_dir=root),
+                llm=llm,
+                memory_manager=MemoryManager(InMemoryMemoryStore({}), llm),
+                knowledge_base=kb,
+                platform=PlatformGateway(),
+                counter_store=MemoryCounterStore({}),
+                rag_service=build_rag_service(KnowledgeBaseRetriever(kb)),
+            )
+            helper.handle(
+                AssistantRequest(
+                    text="\u5e2e\u6211\u540c\u6b65\u91c7\u8d2d\u8ba2\u5355\u6a21\u677f\u7ffb\u8bd1",
+                    session_id="s-recall",
+                    payload={"template": {"templates": [sample_template_detail()], "sourceLanguage": "en_US", "targetLanguage": "ar_SA"}},
+                    dry_run=True,
+                )
+            )
+
+            response = helper.handle(
+                AssistantRequest(
+                    text="\u4f60\u8fd8\u8bb0\u5f97\u6211\u540c\u6b65\u8fc7\u54ea\u4e9b\u5355\u636e\u7684\u6a21\u677f\u7ffb\u8bd1\u5417",
+                    session_id="s-recall",
+                    payload={},
+                    dry_run=True,
+                )
+            )
+
+        self.assertTrue(response.ok)
+        self.assertFalse(response.decision.need_retrieval)
+        self.assertTrue(response.memory.facts.get("operationHistory"))
+        answer = response.results[0].output.get("answer", "")
+        self.assertIn("Purchase order notice", answer)
+
+    def test_chat_recall_hydrates_operation_history_from_saved_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            llm = RuleBasedLLMClient()
+            store = InMemoryMemoryStore({})
+            kb = InMemoryKnowledgeBase()
+            helper = MessagePlatformHelper(
+                settings=Settings(data_dir=root),
+                llm=llm,
+                memory_manager=MemoryManager(store, llm),
+                knowledge_base=kb,
+                platform=PlatformGateway(),
+                counter_store=MemoryCounterStore({}),
+                rag_service=build_rag_service(KnowledgeBaseRetriever(kb)),
+            )
+            store.save_run(
+                "s-history",
+                {"text": "sync"},
+                {
+                    "results": [
+                        {
+                            "agent": "template",
+                            "ok": True,
+                            "output": {
+                                "summary": "template language sync translated 1 template(s), skipped 0 existing template(s)",
+                                "sourceLanguage": "en_US",
+                                "targetLanguage": "ar_SA",
+                                "translatedTemplates": [
+                                    {
+                                        "templateId": "tpl-001",
+                                        "templateCode": "purchase_order_notice",
+                                        "templateName": "Purchase order notice",
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            )
+
+            response = helper.handle(
+                AssistantRequest(
+                    text="\u4f60\u8fd8\u8bb0\u5f97\u6211\u540c\u6b65\u8fc7\u54ea\u4e9b\u5355\u636e\u7684\u6a21\u677f\u7ffb\u8bd1\u5417",
+                    session_id="s-history",
+                    payload={},
+                    dry_run=True,
+                )
+            )
+
+        self.assertTrue(response.ok)
+        self.assertTrue(response.memory.facts.get("operationHistory"))
+        answer = response.results[0].output.get("answer", "")
+        self.assertIn("Purchase order notice", answer)
+
 
 if __name__ == "__main__":
     unittest.main()
