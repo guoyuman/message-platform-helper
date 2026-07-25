@@ -360,8 +360,21 @@ def _chat_system_prompt(memory) -> str:
         "Answer the user's chat message using the provided conversation memory. "
         "If the user asks what happened before, use memory.summary, memory.facts, and memory.recent_messages. "
         "Do not claim you lack memory when relevant memory is provided. "
-        f"memory={to_jsonable(memory)}"
+        f"memory={_memory_prompt_view(memory)}"
     )
+
+
+def _memory_prompt_view(memory) -> JsonDict:
+    payload = to_jsonable(memory)
+    facts = dict(payload.get("facts") or {})
+    if isinstance(facts.get("operationHistory"), list):
+        facts["operationHistory"] = facts["operationHistory"][-20:]
+    return {
+        "session_id": payload.get("session_id") or payload.get("sessionId"),
+        "summary": payload.get("summary") or "",
+        "facts": facts,
+        "recent_messages": list(payload.get("recent_messages") or payload.get("recentMessages") or [])[-12:],
+    }
 
 
 def _operation_history_patch(request: AssistantRequest, decision, results: List[AgentResult]) -> JsonDict:

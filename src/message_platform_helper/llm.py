@@ -221,6 +221,16 @@ class LLMClient:
             {"text": text, "memory": memory},
         )
 
+    def consolidate_memory(self, memory: JsonDict) -> JsonDict:
+        return self.complete_json(
+            (
+                "Consolidate enterprise conversation memory. Deduplicate repeated facts, "
+                "resolve contradictions by keeping the latest current fact, remove obsolete low-value memory, "
+                "and keep a concise operationHistory. Return JSON with summary and facts."
+            ),
+            {"memory": memory},
+        )
+
 
 @dataclass
 class RuleBasedLLMClient(LLMClient):
@@ -277,6 +287,8 @@ class RuleBasedLLMClient(LLMClient):
                 "profilePatch": self._profile_patch(text),
                 "factsPatch": self._facts_patch(text),
             }
+        if "Consolidate enterprise conversation memory" in system:
+            return self._consolidate_memory(payload.get("memory") or {})
         if "answer field" in system or "Answer user chat" in system or "Answer the user's chat message" in system:
             memory_answer = self._memory_answer(system)
             if memory_answer:
@@ -350,6 +362,24 @@ class RuleBasedLLMClient(LLMClient):
         if not labels:
             return ""
         return "\u4f60\u540c\u6b65\u8fc7\u8fd9\u4e9b\u5355\u636e\u7684\u6a21\u677f\u7ffb\u8bd1\uff1a" + "\u3001".join(dict.fromkeys(labels))
+
+    def _consolidate_memory(self, memory: JsonDict) -> JsonDict:
+        facts = dict(memory.get("facts") or {})
+        history = list(facts.get("operationHistory") or [])
+        consolidated_history = _dedupe_operations(history)[-20:]
+        facts = _dedupe_fact_lists(facts)
+        if consolidated_history:
+            facts["operationHistory"] = consolidated_history
+        else:
+            facts.pop("operationHistory", None)
+        facts["memoryMeta"] = {
+            "consolidated": True,
+            "operationHistoryCount": len(consolidated_history),
+        }
+        return {
+            "summary": str(memory.get("summary") or "")[-800:],
+            "facts": facts,
+        }
 
     def _classify_request_type(self, signals: JsonDict, payload: JsonDict) -> str:
         if signals["is_empty"]:
@@ -641,6 +671,45 @@ def _extract_before(text: str, marker: str) -> str:
         return ""
     value = text.split(marker, 1)[0]
     return value.strip()
+
+
+def _dedupe_operations(history: List[JsonDict]) -> List[JsonDict]:
+    result: List[JsonDict] = []
+    seen: set[str] = set()
+    for item in reversed(history):
+        key = json.dumps(
+            {
+                "agent": item.get("agent"),
+                "workflow": item.get("workflow"),
+                "summary": item.get("summary"),
+                "details": item.get("details"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return list(reversed(result))
+
+
+def _dedupe_fact_lists(facts: JsonDict) -> JsonDict:
+    result: JsonDict = {}
+    for key, value in facts.items():
+        if isinstance(value, list):
+            deduped = []
+            seen: set[str] = set()
+            for item in value:
+                marker = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+                if marker not in seen:
+                    seen.add(marker)
+                    deduped.append(item)
+            result[key] = deduped
+        else:
+            result[key] = value
+    return result
 
 
 def describe_llm(client: LLMClient, settings: Settings) -> JsonDict:

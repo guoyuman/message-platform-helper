@@ -4,11 +4,25 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from .llm import LLMClient
 from .models import ConversationMemory, JsonDict, UserProfile, deep_merge, now_ts, to_jsonable
+
+
+@dataclass(frozen=True)
+class MemoryPolicy:
+    recent_message_limit: int = 20
+    summary_trigger_messages: int = 24
+    operation_history_limit: int = 50
+    fact_list_limit: int = 50
+    summary_char_limit: int = 4000
+    message_char_limit: int = 1200
+    fact_string_char_limit: int = 2000
+    consolidation_operation_threshold: int = 40
+    consolidation_fact_size_threshold: int = 24000
+    consolidation_summary_threshold: int = 3500
 
 
 class MemoryStore(ABC):
@@ -166,25 +180,57 @@ class InMemoryMemoryStore(MemoryStore):
 class MemoryManager:
     store: MemoryStore
     llm: LLMClient
+    policy: MemoryPolicy = field(default_factory=MemoryPolicy)
 
     def load(self, session_id: str) -> ConversationMemory:
         return self.store.load(session_id)
 
     def remember_request(self, memory: ConversationMemory, text: str, request_payload: JsonDict) -> ConversationMemory:
-        memory.recent_messages = (memory.recent_messages + [{"role": "user", "text": text, "at": now_ts()}])[-30:]
+        memory.recent_messages = memory.recent_messages + [{"role": "user", "text": _trim_text(text, self.policy.message_char_limit), "at": now_ts()}]
         summary_update = self.llm.summarize(text, to_jsonable(memory))
         memory.summary = str(summary_update.get("summary") or memory.summary)
         memory.facts = deep_merge(memory.facts, summary_update.get("factsPatch") or {})
         memory.facts = deep_merge(memory.facts, _facts_from_payload(request_payload))
         profile_patch = summary_update.get("profilePatch") or {}
         memory.profile = merge_profile(memory.profile, profile_patch)
-        return self.store.save(memory)
+        return self.store.save(self._compress(memory))
 
     def remember_response(self, memory: ConversationMemory, response_summary: str, facts_patch: JsonDict | None = None) -> ConversationMemory:
-        memory.recent_messages = (memory.recent_messages + [{"role": "assistant", "text": response_summary, "at": now_ts()}])[-30:]
+        memory.recent_messages = memory.recent_messages + [{"role": "assistant", "text": _trim_text(response_summary, self.policy.message_char_limit), "at": now_ts()}]
         if facts_patch:
             memory.facts = deep_merge(memory.facts, facts_patch)
-        return self.store.save(memory)
+        return self.store.save(self._compress(memory))
+
+    def _compress(self, memory: ConversationMemory) -> ConversationMemory:
+        overflow = len(memory.recent_messages) - self.policy.summary_trigger_messages
+        if overflow > 0:
+            archived = memory.recent_messages[:overflow]
+            archived_text = _messages_to_text(archived)
+            if archived_text:
+                summary_update = self.llm.summarize(
+                    f"Compress older conversation turns into durable enterprise memory:\n{archived_text}",
+                    to_jsonable(memory),
+                )
+                memory.summary = str(summary_update.get("summary") or memory.summary)
+                memory.facts = deep_merge(memory.facts, summary_update.get("factsPatch") or {})
+            memory.recent_messages = memory.recent_messages[overflow:]
+        memory.recent_messages = memory.recent_messages[-self.policy.recent_message_limit :]
+        memory.summary = _trim_text(memory.summary, self.policy.summary_char_limit)
+        memory.facts = _compact_facts(memory.facts, self.policy)
+        if _should_consolidate(memory, self.policy):
+            memory = self._consolidate(memory)
+        return memory
+
+    def _consolidate(self, memory: ConversationMemory) -> ConversationMemory:
+        result = self.llm.consolidate_memory(to_jsonable(memory))
+        if result.get("summary") is not None:
+            memory.summary = _trim_text(str(result.get("summary") or ""), self.policy.summary_char_limit)
+        if isinstance(result.get("facts"), dict):
+            memory.facts = _compact_facts(dict(result["facts"]), self.policy)
+        memory.facts.setdefault("memoryMeta", {})
+        if isinstance(memory.facts["memoryMeta"], dict):
+            memory.facts["memoryMeta"]["lastConsolidatedAt"] = now_ts()
+        return memory
 
 
 def merge_profile(profile: UserProfile, patch: JsonDict) -> UserProfile:
@@ -239,6 +285,58 @@ def _facts_from_payload(payload: JsonDict) -> JsonDict:
     if payload.get("businessConfig"):
         facts["lastBusinessConfig"] = payload["businessConfig"]
     return facts
+
+
+def _messages_to_text(messages: List[JsonDict]) -> str:
+    lines = []
+    for item in messages:
+        role = str(item.get("role") or "")
+        text = str(item.get("text") or "")
+        if role or text:
+            lines.append(f"{role}: {text}".strip())
+    return "\n".join(lines)
+
+
+def _compact_facts(facts: JsonDict, policy: MemoryPolicy) -> JsonDict:
+    compacted: JsonDict = {}
+    for key, value in facts.items():
+        if key == "operationHistory" and isinstance(value, list):
+            compacted[key] = [_compact_fact_value(item, policy) for item in value[-policy.operation_history_limit :]]
+        else:
+            compacted[key] = _compact_fact_value(value, policy)
+    return compacted
+
+
+def _should_consolidate(memory: ConversationMemory, policy: MemoryPolicy) -> bool:
+    operation_history = memory.facts.get("operationHistory")
+    operation_count = len(operation_history) if isinstance(operation_history, list) else 0
+    if operation_count > policy.consolidation_operation_threshold:
+        return True
+    if len(memory.summary) > policy.consolidation_summary_threshold:
+        return True
+    return _json_size(memory.facts) > policy.consolidation_fact_size_threshold
+
+
+def _json_size(value: object) -> int:
+    return len(json.dumps(to_jsonable(value), ensure_ascii=False, default=str))
+
+
+def _compact_fact_value(value: Any, policy: MemoryPolicy, depth: int = 0) -> Any:
+    if depth >= 5:
+        return _trim_text(str(value), policy.fact_string_char_limit)
+    if isinstance(value, dict):
+        return {str(key): _compact_fact_value(item, policy, depth + 1) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_compact_fact_value(item, policy, depth + 1) for item in value[-policy.fact_list_limit :]]
+    if isinstance(value, str):
+        return _trim_text(value, policy.fact_string_char_limit)
+    return value
+
+
+def _trim_text(value: str, limit: int) -> str:
+    if limit <= 0 or len(value) <= limit:
+        return value
+    return value[:limit]
 
 
 def _session_summary(session_id: str, memory: JsonDict, updated_at: object) -> JsonDict:

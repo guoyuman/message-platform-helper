@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from message_platform_helper.llm import RuleBasedLLMClient
-from message_platform_helper.memory import InMemoryMemoryStore, MemoryManager
+from message_platform_helper.memory import InMemoryMemoryStore, MemoryManager, MemoryPolicy
 from message_platform_helper.models import AssistantRequest
 from message_platform_helper.rag import KnowledgeBaseRetriever, build_rag_service, seed_default_knowledge
 from message_platform_helper.reasoning import ReasoningLayer
@@ -119,6 +119,78 @@ class ReasoningRagMemoryTests(unittest.TestCase):
             loaded = manager.load("s1")
         self.assertEqual(updated.facts["lastEmail"], "ops@example.com")
         self.assertIn("mail", loaded.profile.preferred_channels)
+
+    def test_memory_compresses_long_conversation_window(self) -> None:
+        llm = RuleBasedLLMClient()
+        manager = MemoryManager(
+            InMemoryMemoryStore({}),
+            llm,
+            policy=MemoryPolicy(recent_message_limit=4, summary_trigger_messages=6, summary_char_limit=500),
+        )
+        memory = manager.load("s-long")
+
+        for index in range(10):
+            memory = manager.remember_request(memory, f"message {index}", {})
+            memory = manager.remember_response(memory, f"response {index}")
+
+        loaded = manager.load("s-long")
+        self.assertLessEqual(len(loaded.recent_messages), 4)
+        self.assertTrue(loaded.summary)
+        self.assertIn("message", loaded.summary)
+
+    def test_memory_limits_operation_history(self) -> None:
+        llm = RuleBasedLLMClient()
+        manager = MemoryManager(
+            InMemoryMemoryStore({}),
+            llm,
+            policy=MemoryPolicy(operation_history_limit=3),
+        )
+        memory = manager.load("s-history")
+
+        memory = manager.remember_response(
+            memory,
+            "ops",
+            facts_patch={"operationHistory": [{"summary": f"operation {index}"} for index in range(8)]},
+        )
+
+        self.assertEqual([item["summary"] for item in memory.facts["operationHistory"]], ["operation 5", "operation 6", "operation 7"])
+
+    def test_memory_consolidates_duplicate_operation_history_over_threshold(self) -> None:
+        llm = RuleBasedLLMClient()
+        manager = MemoryManager(
+            InMemoryMemoryStore({}),
+            llm,
+            policy=MemoryPolicy(operation_history_limit=10, consolidation_operation_threshold=3),
+        )
+        memory = manager.load("s-consolidate")
+
+        memory = manager.remember_response(
+            memory,
+            "ops",
+            facts_patch={
+                "operationHistory": [
+                    {"agent": "template", "workflow": "template_workflow", "summary": "same operation"},
+                    {"agent": "template", "workflow": "template_workflow", "summary": "same operation"},
+                    {"agent": "channel_config", "workflow": "implementation_workflow", "summary": "channel saved"},
+                    {"agent": "channel_config", "workflow": "implementation_workflow", "summary": "channel saved"},
+                ]
+            },
+        )
+
+        summaries = [item["summary"] for item in memory.facts["operationHistory"]]
+        self.assertEqual(summaries, ["same operation", "channel saved"])
+        self.assertTrue(memory.facts["memoryMeta"]["consolidated"])
+        self.assertIn("lastConsolidatedAt", memory.facts["memoryMeta"])
+
+    def test_memory_current_fact_uses_latest_value_before_consolidation(self) -> None:
+        llm = RuleBasedLLMClient()
+        manager = MemoryManager(InMemoryMemoryStore({}), llm)
+        memory = manager.load("s-current")
+
+        memory = manager.remember_response(memory, "first", facts_patch={"currentEmail": "ops@example.com"})
+        memory = manager.remember_response(memory, "second", facts_patch={"currentEmail": "notify@example.com"})
+
+        self.assertEqual(memory.facts["currentEmail"], "notify@example.com")
 
 
 if __name__ == "__main__":
