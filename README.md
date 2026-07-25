@@ -20,11 +20,21 @@ python -m message_platform_helper.cli demo
 uvicorn src.message_platform_helper.api.app:create_app --reload --host 127.0.0.1 --port 8790
 ```
 
+前端单独启动：
+
+```powershell
+cd web
+npm install
+npm run dev
+```
+
 打开页面：
 
 ```text
-http://127.0.0.1:8790
+http://127.0.0.1:5173
 ```
+
+后端仅提供 `/api/*` 接口，前端开发服务通过 Vite proxy 转发到 `http://127.0.0.1:8790`。
 
 ## Runtime Env
 
@@ -38,7 +48,7 @@ http://127.0.0.1:8790
 
 ## HTTP API
 
-- `POST /api/chat`: 统一入口，自动判断是否检索、调哪些 Agent。
+- `POST /api/chat/stream`: 统一入口，自动判断是否检索、调哪些 Agent。
 - `POST /api/knowledge/ingest`: 写入文本或通过 `path` 写入 Markdown/PDF/DOCX 文件。
 - `POST /api/knowledge/search`: 知识库检索。
 - `GET /api/knowledge/stats`: 知识库统计。

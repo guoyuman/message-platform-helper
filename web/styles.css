@@ -38,7 +38,7 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 280px minmax(420px, 1fr) 420px;
+  grid-template-columns: 280px minmax(420px, 1fr) 360px;
   min-height: 100vh;
 }
 
@@ -50,8 +50,11 @@ button {
 }
 
 .sidebar {
+  display: flex;
+  flex-direction: column;
   border-width: 0 1px 0 0;
-  padding: 20px 16px;
+  padding: 18px 12px;
+  overflow-y: auto;
 }
 
 .inspector {
@@ -70,7 +73,8 @@ button {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
+  padding: 0 4px;
 }
 
 .brand-mark,
@@ -224,6 +228,100 @@ textarea:focus {
   gap: 8px;
 }
 
+.new-chat-button {
+  width: 100%;
+  min-height: 42px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 700;
+  text-align: left;
+  padding: 0 14px;
+}
+
+.new-chat-button:hover {
+  border-color: var(--teal);
+  background: #e7f5f4;
+  color: var(--teal-dark);
+}
+
+.history-panel {
+  min-height: 0;
+  margin-bottom: 14px;
+}
+
+.session-list {
+  display: grid;
+  gap: 10px;
+  max-height: none;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.history-panel .session-list {
+  max-height: min(340px, 34vh);
+  min-height: 180px;
+}
+
+.session-group {
+  display: grid;
+  gap: 4px;
+}
+
+.session-group-title {
+  padding: 8px 8px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.session-item {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  padding: 8px 10px;
+  text-align: left;
+  min-height: 40px;
+}
+
+.session-item:hover,
+.session-item.active {
+  background: #e7f5f4;
+  color: var(--teal-dark);
+}
+
+.session-item strong,
+.session-item span {
+  display: block;
+}
+
+.session-item strong {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-state {
+  padding: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .quick,
 .secondary,
 .primary,
@@ -240,6 +338,10 @@ textarea:focus {
 .icon-button:hover {
   border-color: var(--teal);
   color: var(--teal-dark);
+}
+
+.quick {
+  padding: 0 10px;
 }
 
 .primary {
@@ -263,6 +365,13 @@ textarea:focus {
   padding: 18px 24px;
   border-bottom: 1px solid var(--line);
   background: rgba(251, 252, 253, 0.9);
+}
+
+.topbar h2 {
+  max-width: min(720px, 64vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .top-actions {
@@ -337,6 +446,7 @@ textarea:focus {
 .bubble p {
   margin: 0;
   line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .agent-chips {
@@ -380,7 +490,7 @@ textarea:focus {
 
 .tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   margin-bottom: 12px;
 }
@@ -477,6 +587,15 @@ textarea:focus {
   color: var(--rose);
 }
 
+.memory-summary {
+  max-height: 92px;
+  overflow: auto;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 240px minmax(360px, 1fr);
@@ -485,6 +604,10 @@ textarea:focus {
   .inspector {
     grid-column: 1 / -1;
     border-width: 1px 0 0;
+  }
+
+  .history-panel .session-list {
+    max-height: 360px;
   }
 }
 

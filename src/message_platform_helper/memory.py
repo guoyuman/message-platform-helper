@@ -66,6 +66,17 @@ class PostgresMemoryStore(MemoryStore):
             session.commit()
             return int(record.id)
 
+    def list_sessions(self) -> list[JsonDict]:
+        from sqlalchemy import select
+
+        with self._factory() as session:
+            rows = session.execute(
+                select(self._session_memory_record.session_id, self._session_memory_record.memory_json, self._session_memory_record.updated_at)
+                .order_by(self._session_memory_record.updated_at.desc())
+                .limit(50)
+            ).all()
+        return [_session_summary(row[0], dict(row[1] or {}), row[2]) for row in rows]
+
 
 @dataclass
 class RedisMemoryStore(MemoryStore):
@@ -94,6 +105,16 @@ class RedisMemoryStore(MemoryStore):
     def clear(self, session_id: str) -> None:
         self._client.delete(self.prefix + session_id)
 
+    def list_sessions(self) -> list[JsonDict]:
+        sessions: list[JsonDict] = []
+        for key in self._client.scan_iter(self.prefix + "*", count=50):
+            raw = self._client.get(key)
+            if not raw:
+                continue
+            session_id = str(key).removeprefix(self.prefix)
+            sessions.append(_session_summary(session_id, json.loads(raw), None))
+        return sorted(sessions, key=lambda item: float(item.get("updatedAt") or 0), reverse=True)[:50]
+
 
 @dataclass
 class InMemoryMemoryStore(MemoryStore):
@@ -116,6 +137,13 @@ class InMemoryMemoryStore(MemoryStore):
             self.runs = []
         self.runs.append({"session_id": session_id, "request": request, "response": response, "created_at": now_ts()})
         return len(self.runs)
+
+    def list_sessions(self) -> list[JsonDict]:
+        return sorted(
+            [_session_summary(session_id, to_jsonable(memory), None) for session_id, memory in self.values.items()],
+            key=lambda item: float(item.get("updatedAt") or 0),
+            reverse=True,
+        )[:50]
 
 
 @dataclass
@@ -195,6 +223,15 @@ def _facts_from_payload(payload: JsonDict) -> JsonDict:
     if payload.get("businessConfig"):
         facts["lastBusinessConfig"] = payload["businessConfig"]
     return facts
+
+
+def _session_summary(session_id: str, memory: JsonDict, updated_at: object) -> JsonDict:
+    return {
+        "sessionId": session_id,
+        "summary": str(memory.get("summary") or ""),
+        "updatedAt": memory.get("updated_at") or memory.get("updatedAt") or str(updated_at or ""),
+        "recentMessageCount": len(memory.get("recent_messages") or memory.get("recentMessages") or []),
+    }
 
 
 def build_memory_store(database_url: str, redis_url: str = "") -> MemoryStore:

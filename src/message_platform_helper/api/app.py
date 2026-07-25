@@ -4,7 +4,6 @@ import json
 import queue
 import threading
 import time
-from pathlib import Path
 from typing import Callable
 
 from ..application import response_to_streaming_events
@@ -13,15 +12,13 @@ from ..orchestrator import MessagePlatformHelper, request_from_payload
 from ..strategy import SendStrategyEvaluator
 
 HelperFactory = Callable[[], MessagePlatformHelper]
-APP_DIR = Path(__file__).resolve().parents[3]
-WEB_DIR = APP_DIR / "web"
 STREAM_KEEPALIVE_SECONDS = 10
 
 
 def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
     try:
         from fastapi import FastAPI, Request
-        from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+        from fastapi.responses import JSONResponse, StreamingResponse
     except ImportError as exc:
         raise RuntimeError("FastAPI support requires installing the 'server' extra dependencies.") from exc
 
@@ -42,6 +39,12 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
     @app.get("/api/memory")
     async def memory(sessionId: str = "default"):
         return {"ok": True, "memory": to_jsonable(helper.memory_manager.load(sessionId))}
+
+    @app.get("/api/memory/sessions")
+    async def memory_sessions():
+        list_sessions = getattr(helper.memory_manager.store, "list_sessions", None)
+        sessions = list_sessions() if callable(list_sessions) else []
+        return {"ok": True, "sessions": to_jsonable(sessions)}
 
     @app.post("/api/chat")
     async def chat(payload: dict, request: Request):
@@ -159,19 +162,6 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
         )
         decision = SendStrategyEvaluator(helper.counter_store).evaluate(strategy, payload.get("message") or {})
         return {"ok": True, "decision": to_jsonable(decision)}
-
-    @app.get("/")
-    @app.get("/index.html")
-    async def index():
-        return FileResponse(WEB_DIR / "index.html", media_type="text/html; charset=utf-8")
-
-    @app.get("/app.js")
-    async def app_js():
-        return FileResponse(WEB_DIR / "app.js", media_type="text/javascript; charset=utf-8")
-
-    @app.get("/styles.css")
-    async def styles_css():
-        return FileResponse(WEB_DIR / "styles.css", media_type="text/css; charset=utf-8")
 
     return app
 
