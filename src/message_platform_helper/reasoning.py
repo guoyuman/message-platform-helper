@@ -14,7 +14,7 @@ from .models import AssistantRequest, ConversationMemory, ReasoningDecision
 from .workflow import build_default_workflow_registry
 
 
-KNOWN_AGENTS = {"template", "business_config", "channel_config", "send_strategy", "knowledge"}
+KNOWN_AGENTS = {"template", "channel_config", "knowledge"}
 
 
 @dataclass

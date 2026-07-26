@@ -73,7 +73,6 @@ class OrchestratorTests(unittest.TestCase):
                             "documentId": "purchase_order",
                             "groupCode": "businessprocess",
                         },
-                        "strategy": {},
                     },
                     dry_run=True,
                 )
@@ -82,7 +81,6 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(response.ok)
         self.assertIn("channel_config", agents)
         self.assertIn("template", agents)
-        self.assertIn("send_strategy", agents)
         self.assertTrue(response.memory.summary)
 
     def test_knowledge_question_returns_rag_answer(self) -> None:

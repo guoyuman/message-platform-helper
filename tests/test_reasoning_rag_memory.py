@@ -3,10 +3,13 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from message_platform_helper.llm import RuleBasedLLMClient
 from message_platform_helper.memory import InMemoryMemoryStore, MemoryManager, MemoryPolicy
 from message_platform_helper.models import AssistantRequest
+from message_platform_helper.rag.loader.pdf_loader import PdfLoader
+from message_platform_helper.rag.models import Document, DocumentMetadata, stable_document_id
 from message_platform_helper.rag import KnowledgeBaseRetriever, build_rag_service, seed_default_knowledge
 from message_platform_helper.reasoning import ReasoningLayer
 
@@ -109,6 +112,34 @@ class ReasoningRagMemoryTests(unittest.TestCase):
         self.assertEqual(results[0].source, "default:ops.md")
         self.assertIn("ops", results[0].tags)
         self.assertFalse(legacy_results)
+
+    def test_default_knowledge_is_seeded_from_pdf_documents_under_knowledge_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir()
+            pdf_path = knowledge_dir / "link_questions.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4")
+
+            def load_pdf(self, source, *, title=None, tags=None):
+                path = Path(source)
+                content = "超链接问题需要在模板内容中配置跳转地址。"
+                document_title = title or path.stem.replace("_", " ")
+                return Document(
+                    id=stable_document_id(str(path), document_title, content),
+                    title=document_title,
+                    content=content,
+                    metadata=DocumentMetadata(format="pdf", source=str(path), tags=[]),
+                )
+
+            kb = InMemoryKnowledgeBase()
+            with patch.object(PdfLoader, "load", load_pdf):
+                seed_default_knowledge(kb, knowledge_dir)
+            results = kb.search("超链接 跳转地址", limit=1)
+
+        self.assertTrue(results)
+        self.assertEqual(results[0].title, "link questions")
+        self.assertEqual(results[0].source, "default:link_questions.pdf")
 
     def test_memory_updates_profile_and_facts(self) -> None:
         llm = RuleBasedLLMClient()

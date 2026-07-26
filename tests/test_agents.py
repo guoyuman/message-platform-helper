@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 
 from message_platform_helper.agents.channel_config import infer_email_config
-from message_platform_helper.agents.send_strategy import build_strategy
 from message_platform_helper.agents.template import TemplateAgent, extract_variables
 from message_platform_helper.llm import RuleBasedLLMClient
 from message_platform_helper.models import AssistantRequest, ConversationMemory

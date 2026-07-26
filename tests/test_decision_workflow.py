@@ -53,12 +53,11 @@ class DecisionWorkflowTests(unittest.TestCase):
     def test_business_message_configuration_question_routes_to_knowledge_query(self) -> None:
         engine = self._engine(
             IntentResult(
-                intent="business_config",
+                intent="knowledge_query",
                 request_type="query",
                 domain="business_message",
                 operation="explain",
                 confidence=0.86,
-                metadata={"selectedAgents": ["business_config"]},
             )
         )
 
@@ -76,10 +75,10 @@ class DecisionWorkflowTests(unittest.TestCase):
         self.assertEqual(decision.selected_agents, ["knowledge"])
         self.assertEqual(decision.selected_tools, ["knowledge.search", "knowledge.answer"])
 
-    def test_business_message_configuration_action_routes_to_business_agent(self) -> None:
+    def test_business_message_configuration_action_does_not_select_removed_business_agent(self) -> None:
         engine = self._engine(
             IntentResult(
-                intent="business_config",
+                intent="implementation",
                 request_type="action",
                 domain="business_message",
                 operation="create",
@@ -97,9 +96,9 @@ class DecisionWorkflowTests(unittest.TestCase):
         self.assertEqual(decision.operation, "create")
         self.assertEqual(decision.intent, "implementation")
         self.assertFalse(decision.need_rag)
-        self.assertEqual(decision.workflow, "implementation_workflow")
-        self.assertEqual(decision.selected_agents, ["business_config"])
-        self.assertEqual(decision.selected_tools, ["business.build_payload", "platform.business.preview"])
+        self.assertEqual(decision.workflow, "general_chat")
+        self.assertEqual(decision.selected_agents, [])
+        self.assertEqual(decision.selected_tools, [])
 
     def test_memory_recall_question_does_not_route_to_knowledge_query(self) -> None:
         engine = self._engine(
@@ -123,6 +122,24 @@ class DecisionWorkflowTests(unittest.TestCase):
         self.assertEqual(decision.workflow, "general_chat")
         self.assertEqual(decision.selected_agents, [])
         self.assertEqual(decision.selected_tools, [])
+
+    def test_low_confidence_query_does_not_route_to_rag_without_explicit_signal(self) -> None:
+        engine = self._engine(
+            IntentResult(
+                intent="knowledge_query",
+                request_type="query",
+                domain="general",
+                operation="explain",
+                confidence=0.2,
+            )
+        )
+
+        decision = engine.decide(
+            AssistantRequest(text="\u968f\u4fbf\u804a\u804a"),
+            ConversationMemory(session_id="s1"),
+        )
+
+        self.assertFalse(decision.need_rag)
 
     def test_rule_based_classifier_splits_business_query_and_action(self) -> None:
         workflows = build_default_workflow_registry()
@@ -148,7 +165,7 @@ class DecisionWorkflowTests(unittest.TestCase):
         self.assertEqual(query.selected_agents, ["knowledge"])
         self.assertTrue(query.need_rag)
         self.assertEqual(action.request_type, "action")
-        self.assertEqual(action.selected_agents, ["business_config"])
+        self.assertEqual(action.selected_agents, [])
         self.assertFalse(action.need_rag)
 
     def test_rule_based_classifier_maps_payload_to_multi_agent_workflow(self) -> None:
@@ -168,7 +185,6 @@ class DecisionWorkflowTests(unittest.TestCase):
                 payload={
                     "template": {"targetLanguage": "en_US"},
                     "email": "ops@example.com",
-                    "strategy": {"maxPerHour": 2},
                 },
             ),
             ConversationMemory(session_id="s1"),
@@ -178,7 +194,7 @@ class DecisionWorkflowTests(unittest.TestCase):
         self.assertEqual(decision.domain, "implementation")
         self.assertEqual(decision.workflow, "message_platform_workflow")
         self.assertFalse(decision.need_rag)
-        self.assertEqual(decision.selected_agents, ["template", "channel_config", "send_strategy"])
+        self.assertEqual(decision.selected_agents, ["template", "channel_config"])
 
     def test_rule_based_classifier_does_not_route_keyword_question_to_business_agent(self) -> None:
         raw = RuleBasedLLMClient().complete_json(
@@ -218,9 +234,9 @@ class DecisionWorkflowTests(unittest.TestCase):
             build_default_workflow_registry(),
         )
 
-        ordered = executor.resolve_execution_order("message_platform_workflow", ["send_strategy", "template", "channel_config"])
+        ordered = executor.resolve_execution_order("message_platform_workflow", ["template", "channel_config"])
 
-        self.assertEqual(ordered, ["template", "channel_config", "send_strategy"])
+        self.assertEqual(ordered, ["template", "channel_config"])
 
 
 if __name__ == "__main__":

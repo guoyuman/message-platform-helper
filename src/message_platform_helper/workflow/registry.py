@@ -78,9 +78,7 @@ def build_default_workflow_registry() -> WorkflowRegistry:
             name="implementation_workflow",
             description="Configure message platform entities through selected implementation agents.",
             steps=[
-                WorkflowStep(name="business", agent="business_config", tools=["business.build_payload", "platform.business.preview"]),
                 WorkflowStep(name="channel", agent="channel_config", tools=["channel.infer_email", "platform.channel.save"]),
-                WorkflowStep(name="strategy", agent="send_strategy", tools=["strategy.build", "strategy.evaluate"]),
             ],
         )
     )
@@ -91,9 +89,7 @@ def build_default_workflow_registry() -> WorkflowRegistry:
             steps=[
                 WorkflowStep(name="knowledge", agent="knowledge", tools=["knowledge.search"]),
                 WorkflowStep(name="template", agent="template", tools=["template.translate"]),
-                WorkflowStep(name="business", agent="business_config", tools=["business.build_payload"]),
                 WorkflowStep(name="channel", agent="channel_config", tools=["channel.infer_email"]),
-                WorkflowStep(name="strategy", agent="send_strategy", tools=["strategy.build"]),
             ],
         )
     )

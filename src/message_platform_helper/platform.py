@@ -130,34 +130,6 @@ class PlatformGateway:
             config = json.loads(config)
         return smtp_send_test(config or {})
 
-    def run_business_config(self, payload: JsonDict, dry_run: bool = True) -> JsonDict:
-        if self.business_agent_url:
-            path = "/api/config/preview" if dry_run else "/api/config/publish"
-            return self._post_url(self.business_agent_url.rstrip("/") + path, payload)
-        if self.platform_base_url and not dry_run:
-            return self._post_platform("/bizMessageConfig/save", payload)
-        return {
-            "ok": True,
-            "status": 1,
-            "msg": "success",
-            "data": {"saved": True},
-            "endpoint": "message-agent:/api/config/preview",
-            "payload": payload,
-        }
-
-    def save_strategy(self, payload: JsonDict, dry_run: bool = True) -> JsonDict:
-        endpoint = "/msgSendStrategy/save"
-        if dry_run or not self.platform_base_url:
-            return {
-                "ok": True,
-                "status": 1,
-                "msg": "success",
-                "data": {"saved": True},
-                "endpoint": endpoint,
-                "payload": payload,
-            }
-        return self._post_platform(endpoint, payload)
-
     def _post_platform(self, path: str, payload: JsonDict) -> JsonDict:
         return self._post_url(self.platform_base_url.rstrip("/") + "/" + path.lstrip("/"), payload)
 

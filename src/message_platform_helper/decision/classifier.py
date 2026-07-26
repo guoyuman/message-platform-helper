@@ -33,7 +33,6 @@ class LLMIntentClassifier:
                 "allowedIntents": [
                     "knowledge_query",
                     "template_config",
-                    "business_config",
                     "implementation",
                     "error_code",
                     "workflow",
@@ -43,7 +42,7 @@ class LLMIntentClassifier:
                     "casual_chat",
                 ],
                 "allowedRequestTypes": ["query", "action", "tool", "chat"],
-                "allowedDomains": ["business_message", "template", "error_code", "implementation", "channel", "send_strategy", "general"],
+                "allowedDomains": ["business_message", "template", "error_code", "implementation", "channel", "general"],
                 "allowedOperations": ["query", "explain", "create", "update", "delete", "execute"],
             },
         )
@@ -51,7 +50,7 @@ class LLMIntentClassifier:
         intent = str(raw.get("intent") or "").strip() or legacy_intent_for(
             axes["request_type"], axes["domain"], axes["operation"]
         )
-        if intent in {"implementation", "workflow", "knowledge_query", "error_code", "template_config", "translation", "summary", "casual_chat", "business_config"}:
+        if intent in {"implementation", "workflow", "knowledge_query", "error_code", "template_config", "translation", "summary", "casual_chat"}:
             intent = legacy_intent_for(axes["request_type"], axes["domain"], axes["operation"])
         metadata = {
             key: value

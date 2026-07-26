@@ -17,16 +17,12 @@ JsonDict = Dict[str, Any]
 AGENT_TOOLS = {
     "knowledge": ["knowledge.search", "knowledge.answer"],
     "template": ["domain.tree.get", "business_object.resolve", "template.sync_language", "platform.template.save"],
-    "business_config": ["business.build_payload", "platform.business.preview"],
     "channel_config": ["channel.infer_email", "platform.channel.save"],
-    "send_strategy": ["strategy.build", "strategy.evaluate"],
 }
 
 DOMAIN_AGENTS = {
-    "business_message": ["business_config"],
     "template": ["template"],
     "channel": ["channel_config"],
-    "send_strategy": ["send_strategy"],
     "error_code": ["knowledge"],
 }
 
@@ -136,21 +132,6 @@ DOMAIN_PATTERNS = {
         "\u90ae\u4ef6",
         "\u90ae\u4ef6\u901a\u9053",
         "\u901a\u9053",
-    ),
-    "send_strategy": (
-        "strategy",
-        "schedule",
-        "rate limit",
-        "channel limit",
-        "\u7b56\u7565",
-        "\u9891\u6b21",
-        "\u9891\u63a7",
-        "\u9650\u6d41",
-        "\u5b9a\u65f6",
-        "\u62e6\u622a",
-        "\u6bcf\u5c0f\u65f6",
-        "\u6bcf\u5929",
-        "\u6bcf\u65e5",
     ),
     "error_code": (
         "error",
@@ -306,8 +287,8 @@ class RuleBasedLLMClient(LLMClient):
             "sync" in signals["lowered"] or "\u540c\u6b65" in text
         ):
             intent = "template_translation_sync"
-        workflow = self._workflow_for(request_type, domain)
         agents = self._agents_for(request_type, domain, signals)
+        workflow = self._workflow_for(request_type, domain, agents)
         tools = self._tools_for_agents(agents)
         confidence = 0.88 if signals["payload_domains"] else 0.76 if signals["domain_candidates"] else 0.58
         if request_type == "chat":
@@ -428,8 +409,8 @@ class RuleBasedLLMClient(LLMClient):
                 for agent in DOMAIN_AGENTS.get(item, []):
                     if agent != "knowledge" and agent not in agents:
                         agents.append(agent)
-            return agents or ["business_config"]
-        return list(DOMAIN_AGENTS.get(domain, ["business_config"]))
+            return agents
+        return list(DOMAIN_AGENTS.get(domain, []))
 
     def _intent_for(self, request_type: str, domain: str, operation: str) -> str:
         if request_type == "chat":
@@ -440,7 +421,7 @@ class RuleBasedLLMClient(LLMClient):
             return "translation" if operation == "execute" else "template_config"
         return "workflow" if domain == "implementation" else "implementation"
 
-    def _workflow_for(self, request_type: str, domain: str) -> str:
+    def _workflow_for(self, request_type: str, domain: str, agents: List[str] | None = None) -> str:
         if request_type == "chat":
             return "general_chat"
         if request_type == "query":
@@ -448,15 +429,15 @@ class RuleBasedLLMClient(LLMClient):
         if domain == "template":
             return "template_workflow"
         if domain == "implementation":
-            return "message_platform_workflow"
+            return "message_platform_workflow" if agents else "general_chat"
+        if domain == "business_message":
+            return "general_chat"
         return "implementation_workflow"
 
     def _domains_from_payload(self, payload: JsonDict) -> List[str]:
         checks = [
             ("template", ("template", "templates", "messageTemplate", "message_template")),
-            ("business_message", ("businessConfig", "business_config", "businessMessage", "business_message")),
             ("channel", ("channel", "channelConfig", "channel_config", "email")),
-            ("send_strategy", ("strategy", "sendStrategy", "send_strategy")),
         ]
         result: List[str] = []
         for domain, keys in checks:

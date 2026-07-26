@@ -282,8 +282,6 @@ def _facts_from_payload(payload: JsonDict) -> JsonDict:
                 facts["lastTemplateScope"] = scope
     if payload.get("strategy"):
         facts["lastStrategyRequest"] = payload["strategy"]
-    if payload.get("businessConfig"):
-        facts["lastBusinessConfig"] = payload["businessConfig"]
     return facts
 
 
