@@ -20,7 +20,8 @@ from .db import ChunkRecord, DocumentRecord, build_session_factory, rag_database
 from .embedding import EmbeddingProvider, build_embedding_provider
 from .ingestion import DocumentIngestionPipeline
 from .loader import TextLoader
-from .models import Chunk, Document, DocumentMetadata, normalize_tags, stable_document_id
+from .loader.base import default_loader_factory
+from .models import Chunk, Document, DocumentFormat, DocumentMetadata, normalize_tags, stable_document_id
 from .repository import ChunkRepository, DocumentRepository
 from .repository.utils import chunk_to_knowledge, stable_uuid
 
@@ -28,6 +29,7 @@ from .repository.utils import chunk_to_knowledge, stable_uuid
 LOGGER = logging.getLogger(__name__)
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_.#/-]+|[\u4e00-\u9fff]")
 DEFAULT_KNOWLEDGE_DIR = Path(__file__).resolve().parents[3] / "knowledge"
+DEFAULT_KNOWLEDGE_EXTENSIONS = {".md", ".pdf", ".docx"}
 
 
 def tokenize(text: str) -> list[str]:
@@ -40,6 +42,7 @@ class KnowledgeDocument:
     content: str
     source: str
     tags: list[str]
+    format: DocumentFormat = "markdown"
 
 
 @dataclass
@@ -354,25 +357,37 @@ def seed_default_knowledge(kb: KnowledgeBase, knowledge_dir: Path | None = None)
             id=stable_document_id(knowledge_document.source, knowledge_document.title, knowledge_document.content),
             title=knowledge_document.title,
             content=knowledge_document.content,
-            metadata=DocumentMetadata(format="markdown", source=knowledge_document.source, tags=knowledge_document.tags),
+            metadata=DocumentMetadata(
+                format=knowledge_document.format,
+                source=knowledge_document.source,
+                tags=knowledge_document.tags,
+            ),
         )
-        kb.ingest_document(document, replace=True, strategy=MarkdownChunkStrategy())
+        strategy = MarkdownChunkStrategy() if knowledge_document.format == "markdown" else None
+        kb.ingest_document(document, replace=True, strategy=strategy)
 
 
 def load_default_knowledge_documents(knowledge_dir: Path | None = None) -> list[KnowledgeDocument]:
     root = knowledge_dir or DEFAULT_KNOWLEDGE_DIR
     if not root.exists():
         return []
-    paths = sorted(path for path in root.rglob("*.md") if path.is_file())
+    paths = sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in DEFAULT_KNOWLEDGE_EXTENSIONS
+    )
     return [_read_knowledge_document(path, root) for path in paths]
 
 
 def _read_knowledge_document(path: Path, root: Path) -> KnowledgeDocument:
-    from .loader.markdown_loader import MarkdownLoader
-
-    document = MarkdownLoader().load(path)
-    return KnowledgeDocument(title=document.title, content=document.content, source=_default_document_source(path, root), tags=document.metadata.tags)
-
+    document = default_loader_factory().create(path).load(path)
+    return KnowledgeDocument(
+        title=document.title,
+        content=document.content,
+        source=_default_document_source(path, root),
+        tags=document.metadata.tags,
+        format=document.metadata.format,
+    )
 
 def _default_document_source(path: Path, root: Path) -> str:
     try:

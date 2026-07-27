@@ -14,10 +14,14 @@
 
 ```powershell
 docker compose up -d 
-$env:PYTHONPATH = "src"
+
+copy .env.example .env
+# Edit .env locally, keep real keys out of git.
+
+uvicorn src.message_platform_helper.api.app:create_app --reload --host 127.0.0.1 --port 8790
 python -m unittest discover -s tests
 python -m message_platform_helper.cli demo
-uvicorn src.message_platform_helper.api.app:create_app --reload --host 127.0.0.1 --port 8790
+
 ```
 
 前端单独启动：

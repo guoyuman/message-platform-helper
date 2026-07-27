@@ -31,8 +31,16 @@ DEFAULT_RAG_REQUEST_TYPES = {
 class KnowledgePolicy:
     intent_rules: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_RAG_INTENTS))
     request_type_rules: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_RAG_REQUEST_TYPES))
+    min_query_confidence: float = 0.45
 
     def needs_rag(self, intent: IntentResult, request: AssistantRequest, memory: ConversationMemory) -> bool:
+        explicit = intent.metadata.get("needRag") if "needRag" in intent.metadata else intent.metadata.get("need_rag")
+        if explicit is not None:
+            return bool(explicit)
+        if intent.request_type == "chat":
+            return False
+        if intent.request_type == "query" and intent.confidence < self.min_query_confidence:
+            return False
         configured = self.intent_rules.get(intent.intent)
         if configured is not None and intent.intent not in DEFAULT_RAG_INTENTS:
             return configured

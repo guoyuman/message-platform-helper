@@ -339,7 +339,10 @@ def _build_knowledge_base(database_url: str, embedding_provider) -> object:
     from .rag import KnowledgeBase, seed_default_knowledge
 
     kb = KnowledgeBase(database_url, embedding_provider=embedding_provider)
-    seed_default_knowledge(kb)
+    try:
+        seed_default_knowledge(kb)
+    except RuntimeError:
+        pass
     return kb
 
 

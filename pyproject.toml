@@ -24,7 +24,7 @@ server = ["fastapi>=0.111", "uvicorn>=0.30"]
 test = ["pytest>=8"]
 
 [[tool.uv.index]]
-url = "https://mirrors.aliyun.com/pypi/simple/"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
 
 [project.scripts]

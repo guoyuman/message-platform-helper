@@ -51,15 +51,20 @@ def _char_ngrams(text: str, size: int) -> list[str]:
 def _rule_score(chunk: KnowledgeChunk, terms: list[str]) -> float:
     title = chunk.title.lower()
     content = chunk.content.lower()
+    source = chunk.source.lower()
     tags = {tag.lower() for tag in chunk.tags}
     score = 0.0
     for term in terms:
         if term in title:
-            score += 2.0
+            score += 2.4
         if term in tags:
-            score += 1.5
+            score += 1.8
+        if term in source:
+            score += 0.8
         if term in content:
-            score += 0.5
+            score += 0.55
+    if terms and all(term in f"{title}\n{content}" for term in terms[: min(len(terms), 4)]):
+        score += 1.2
     return score
 
 

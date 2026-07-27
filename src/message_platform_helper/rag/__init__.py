@@ -34,6 +34,7 @@ _EXPORT_MODULES = {
     "Reranker": ".reranker",
     "Retriever": ".retriever",
     "RecursiveChunkStrategy": ".chunker",
+    "RetrievalConfig": ".retrieval",
     "RuleBasedReranker": ".reranker",
     "ScoreReranker": ".reranker",
     "VectorRetriever": ".retrieval",
@@ -45,6 +46,7 @@ _EXPORT_MODULES = {
     "split_text": ".knowledge_base",
     "tokenize": ".knowledge_base",
     "reciprocal_rank_fusion": ".retrieval",
+    "weighted_score_fusion": ".retrieval",
 }
 
 __all__ = list(_EXPORT_MODULES)
