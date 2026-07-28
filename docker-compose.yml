@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: message_helper
+      POSTGRES_USER: message_helper
+      POSTGRES_PASSWORD: message_helper
+    ports:
+      - "5432:5432"
+    volumes:
+      - message_helper_postgres:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U message_helper -d message_helper"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  message_helper_postgres:

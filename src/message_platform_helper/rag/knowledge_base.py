@@ -52,6 +52,9 @@ class IngestionSummary:
     text_length: int
     chunk_count: int
     embedding_dimensions: int
+    replaced_chunks: int = 0
+    document_key: str = ""
+    content_sha1: str = ""
 
     def to_dict(self) -> JsonDict:
         return {
@@ -60,6 +63,9 @@ class IngestionSummary:
             "text_length": self.text_length,
             "chunk_count": self.chunk_count,
             "embedding_dimensions": self.embedding_dimensions,
+            "replaced_chunks": self.replaced_chunks,
+            "document_key": self.document_key,
+            "content_sha1": self.content_sha1,
         }
 
 
@@ -142,8 +148,11 @@ class KnowledgeBase:
         *,
         strategy: ChunkStrategy | None = None,
         replace: bool = True,
+        document_key: str = "",
     ) -> list[KnowledgeChunk]:
         result = DocumentIngestionPipeline(chunk_strategy=strategy).ingest_path(path, tags=tags)
+        if document_key:
+            result.document.metadata.extra["document_key"] = str(document_key).strip()
         return self._persist_ingestion(result.document, result.chunks, replace=replace, file_name=Path(path).name)
 
     def ingest_document(
@@ -180,6 +189,24 @@ class KnowledgeBase:
                 row[0]
                 for row in session.execute(
                     select(DocumentRecord.id).where(DocumentRecord.title == title, DocumentRecord.source == source)
+                ).all()
+            ]
+            if not ids:
+                return 0
+            chunk_count = int(session.scalar(select(func.count()).select_from(ChunkRecord).where(ChunkRecord.document_id.in_(ids))) or 0)
+            session.execute(delete(DocumentRecord).where(DocumentRecord.id.in_(ids)))
+            session.commit()
+            return chunk_count
+
+    def delete_document_key(self, document_key: str) -> int:
+        document_key = str(document_key or "").strip()
+        if not document_key:
+            return 0
+        with self._factory() as session:
+            ids = [
+                row[0]
+                for row in session.execute(
+                    select(DocumentRecord.id).where(DocumentRecord.metadata_["document_key"].astext == document_key)
                 ).all()
             ]
             if not ids:
@@ -268,8 +295,10 @@ class KnowledgeBase:
             raise ValueError(f"Document produced no chunks: {document.title}")
         embeddings = self.embedding_provider.embed([chunk.content for chunk in chunks])
         dimensions = self._validate_embeddings(embeddings)
+        replaced_chunks = 0
         if replace:
-            self.delete_document(document.title, document.metadata.source)
+            replaced_chunks += self.delete_document_key(str(document.metadata.extra.get("document_key") or ""))
+            replaced_chunks += self.delete_document(document.title, document.metadata.source)
         with self._factory() as session:
             DocumentRepository(session).save(document)
             ChunkRepository(session).save_many(chunks, embeddings)
@@ -280,6 +309,9 @@ class KnowledgeBase:
             text_length=len(document.content),
             chunk_count=len(chunks),
             embedding_dimensions=dimensions,
+            replaced_chunks=replaced_chunks,
+            document_key=str(document.metadata.extra.get("document_key") or ""),
+            content_sha1=str(document.metadata.extra.get("content_sha1") or ""),
         )
         LOGGER.info(
             "RAG ingest completed file=%s type=%s text_length=%s chunks=%s embedding_dimensions=%s",

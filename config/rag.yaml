@@ -1,0 +1,29 @@
+{
+  "database": {
+    "postgres": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "database": "message_helper",
+      "username": "message_helper",
+      "password": "message_helper",
+      "url_env": "MESSAGE_HELPER_RAG_DATABASE_URL"
+    }
+  },
+  "embedding": {
+    "provider": "openai",
+    "model": "text-embedding-3-large",
+    "dimensions": 1536
+  },
+  "retrieval": {
+    "keyword_top_k": 20,
+    "vector_top_k": 20,
+    "final_top_k": 5,
+    "keyword_weight": 0.7,
+    "vector_weight": 0.3,
+    "similarity_threshold": 0.2
+  },
+  "chunk": {
+    "size": 600,
+    "overlap": 50
+  }
+}

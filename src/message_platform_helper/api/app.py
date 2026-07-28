@@ -123,6 +123,7 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
                 path=str(payload.get("path")),
                 tags=list(payload.get("tags") or []),
                 replace=bool(payload.get("replace", True)),
+                document_key=str(payload.get("documentKey") or payload.get("document_key") or payload.get("documentId") or payload.get("document_id") or ""),
             )
         return helper.ingest_knowledge(
             title=str(payload.get("title") or "Untitled"),

@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass, field
 
 from ..application.security import TenantContext
+from ..llm import LLMClient
 from ..models import JsonDict, KnowledgeChunk
 from .citation_builder import CitationBuilder
 from .context_builder import ContextBuilder
@@ -87,6 +88,7 @@ class RagService:
         chunks: list[KnowledgeChunk] | None = None,
         limit: int = 5,
         tenant_context: TenantContext | None = None,
+        llm: LLMClient | None = None,
     ) -> JsonDict:
         analysis = self.query_analyzer.analyze(question)
         selected = chunks if chunks is not None else self.retrieve(question, limit=limit, tenant_context=tenant_context)
@@ -127,10 +129,11 @@ class RagService:
                     }
                 ],
             }
+        generated_answer = _llm_answer(llm, question, prompt) if llm is not None else ""
         return {
             "ok": True,
             "summary": f"answered from {len(selected)} knowledge chunk(s)",
-            "answer": _extractive_answer(question, selected),
+            "answer": generated_answer or _extractive_answer(question, selected),
             "citations": built_context.citations,
             "context": built_context.context,
             "prompt": prompt,
@@ -214,6 +217,18 @@ def _extractive_answer(question: str, chunks: list[KnowledgeChunk]) -> str:
         lines.append(f"{index}. {chunk.title}: {excerpt}")
     lines.append("\u5efa\u8bae\u5b9e\u9645\u5904\u7406\u65f6\u4fdd\u7559\u53d1\u9001\u8bb0\u5f55\u91cc\u7684\u9519\u8bef\u7801\u3001\u901a\u9053\u3001\u63a5\u6536\u4eba\u3001\u6a21\u677f\u7f16\u7801\u548c\u8bf7\u6c42 payload\uff0c\u4fbf\u4e8e\u7ee7\u7eed\u8ffd\u8e2a\u3002")
     return "\n".join(lines)
+
+
+def _llm_answer(llm: LLMClient, question: str, prompt: str) -> str:
+    response = llm.answer(
+        prompt,
+        system_prompt=(
+            "你是企业消息平台知识库助手。"
+            "请只依据用户问题和给定知识片段回答；信息不足时说明缺口。"
+            "回答要直接、可执行，并保留关键配置名、错误码和步骤。"
+        ),
+    )
+    return str(response.get("answer") or "").strip()
 
 
 __all__ = ["RagService", "build_postgres_rag_service", "build_rag_service"]

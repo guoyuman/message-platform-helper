@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+web/node_modules/
+.venv/
+.uv-cache/
+.pytest_cache/
+__pycache__/
+.idea/

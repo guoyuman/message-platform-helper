@@ -205,9 +205,9 @@ class MessagePlatformHelper:
             "stats": self.knowledge_base.stats(),
         }
 
-    def ingest_knowledge_file(self, path: str, tags: List[str] | None = None, replace: bool = True) -> JsonDict:
+    def ingest_knowledge_file(self, path: str, tags: List[str] | None = None, replace: bool = True, document_key: str = "") -> JsonDict:
         before = self.knowledge_base.count()
-        chunks = self.knowledge_base.ingest_file(Path(path), tags=tags, replace=replace)
+        chunks = self.knowledge_base.ingest_file(Path(path), tags=tags, replace=replace, document_key=document_key)
         after = self.knowledge_base.count()
         return {
             "ok": True,

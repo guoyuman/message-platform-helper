@@ -40,7 +40,7 @@ class KnowledgeAgent(ReActAgent):
         question = str(payload.get("question") or context.request.text)
         chunks = context.retrieved[:5]
         if context.rag_service is not None:
-            return context.rag_service.answer(question, chunks=chunks, tenant_context=context.tenant_context)
+            return context.rag_service.answer(question, chunks=chunks, tenant_context=context.tenant_context, llm=context.llm)
         if not chunks:
             return {
                 "ok": False,
