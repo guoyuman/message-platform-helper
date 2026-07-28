@@ -187,12 +187,9 @@ class MemoryManager:
 
     def remember_request(self, memory: ConversationMemory, text: str, request_payload: JsonDict) -> ConversationMemory:
         memory.recent_messages = memory.recent_messages + [{"role": "user", "text": _trim_text(text, self.policy.message_char_limit), "at": now_ts()}]
-        summary_update = self.llm.summarize(text, to_jsonable(memory))
-        memory.summary = str(summary_update.get("summary") or memory.summary)
-        memory.facts = deep_merge(memory.facts, summary_update.get("factsPatch") or {})
         memory.facts = deep_merge(memory.facts, _facts_from_payload(request_payload))
-        profile_patch = summary_update.get("profilePatch") or {}
-        memory.profile = merge_profile(memory.profile, profile_patch)
+        memory.summary = _request_summary(memory.summary, text, self.policy.summary_char_limit)
+        memory.profile = merge_profile(memory.profile, _profile_patch_from_text(text))
         return self.store.save(self._compress(memory))
 
     def remember_response(self, memory: ConversationMemory, response_summary: str, facts_patch: JsonDict | None = None) -> ConversationMemory:
@@ -283,6 +280,33 @@ def _facts_from_payload(payload: JsonDict) -> JsonDict:
     if payload.get("strategy"):
         facts["lastStrategyRequest"] = payload["strategy"]
     return facts
+
+
+def _request_summary(existing: str, text: str, limit: int) -> str:
+    short = _trim_text(" ".join(str(text or "").split()), 160)
+    if not short:
+        return existing
+    if not existing:
+        return short
+    if short in existing:
+        return _trim_text(existing, limit)
+    return _trim_text(f"{existing} | {short}", limit)
+
+
+def _profile_patch_from_text(text: str) -> JsonDict:
+    channels = []
+    lowered = str(text or "").lower()
+    channel_patterns = {
+        "mail": ("email", "mail", "smtp", "邮箱", "邮件", "閭", "閭欢"),
+        "sms": ("sms", "短信", "鐭俊"),
+        "enterprise_wechat": ("企业微信", "企微", "浼佷笟寰俊"),
+        "weixin": ("微信", "寰俊"),
+        "uspace": ("消息中心", "娑堟伅涓績"),
+    }
+    for channel, patterns in channel_patterns.items():
+        if any(pattern in lowered or pattern in text for pattern in patterns):
+            channels.append(channel)
+    return {"preferred_channels": channels} if channels else {}
 
 
 def _messages_to_text(messages: List[JsonDict]) -> str:
