@@ -36,15 +36,19 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
         return helper.health()
 
     @app.get("/api/memory")
-    async def memory(sessionId: str = "default"):
+    async def memory(sessionId: str = "default", tenantId: str = ""):
         load_for_display = getattr(helper, "load_memory_for_display", None)
-        memory_payload = load_for_display(sessionId) if callable(load_for_display) else helper.memory_manager.load(sessionId)
+        memory_payload = load_for_display(sessionId, tenantId) if callable(load_for_display) else helper.memory_manager.load(sessionId)
         return {"ok": True, "memory": to_jsonable(memory_payload)}
 
     @app.get("/api/memory/sessions")
-    async def memory_sessions():
-        list_sessions = getattr(helper.memory_manager.store, "list_sessions", None)
-        sessions = list_sessions() if callable(list_sessions) else []
+    async def memory_sessions(tenantId: str = ""):
+        list_for_display = getattr(helper, "list_memory_sessions_for_display", None)
+        if callable(list_for_display):
+            sessions = list_for_display(tenantId)
+        else:
+            list_sessions = getattr(helper.memory_manager.store, "list_sessions", None)
+            sessions = list_sessions() if callable(list_sessions) else []
         return {"ok": True, "sessions": to_jsonable(sessions)}
 
     @app.post("/api/chat")

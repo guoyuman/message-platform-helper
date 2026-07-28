@@ -35,6 +35,11 @@ function App() {
   }, []);
 
   useEffect(() => {
+    loadSessions();
+    loadMemory(sessionId);
+  }, [tenantId]);
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, thinkingStage]);
 
@@ -54,7 +59,7 @@ function App() {
 
   async function loadSessions() {
     try {
-      const response = await fetchJson("/api/memory/sessions");
+      const response = await fetchJson(`/api/memory/sessions?tenantId=${encodeURIComponent(tenantId.trim())}`);
       const hydrated = await Promise.all((response.sessions || []).map(hydrateSession));
       setSessions(hydrated);
     } catch {
@@ -62,9 +67,16 @@ function App() {
     }
   }
 
+  function memoryUrl(nextSessionId) {
+    const params = new URLSearchParams();
+    params.set("sessionId", nextSessionId || DEFAULT_SESSION);
+    params.set("tenantId", tenantId.trim());
+    return `/api/memory?${params.toString()}`;
+  }
+
   async function hydrateSession(item) {
     try {
-      const response = await fetchJson(`/api/memory?sessionId=${encodeURIComponent(item.sessionId || DEFAULT_SESSION)}`);
+      const response = await fetchJson(memoryUrl(item.sessionId || DEFAULT_SESSION));
       const nextMemory = response.memory || {};
       return {
         ...item,
@@ -79,7 +91,7 @@ function App() {
 
   async function loadMemory(nextSessionId = sessionId, options = {}) {
     try {
-      const response = await fetchJson(`/api/memory?sessionId=${encodeURIComponent(nextSessionId || DEFAULT_SESSION)}`);
+      const response = await fetchJson(memoryUrl(nextSessionId || DEFAULT_SESSION));
       const nextMemory = response.memory || {};
       setMemory(nextMemory);
       if (options.syncMessages) {

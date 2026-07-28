@@ -15,7 +15,7 @@ from .decision import DecisionEngine, build_default_decision_engine, to_reasonin
 from .decision import KnowledgePolicy, WorkflowRouter
 from .infrastructure.observability import RequestMetrics, TraceContext, elapsed_ms, log_request_completed
 from .llm import LLMClient, build_llm, describe_llm
-from .memory import MemoryManager, build_memory_store
+from .memory import MemoryManager, build_memory_store, memory_from_dict
 from .models import AgentResult, AssistantRequest, HelperResponse, JsonDict, KnowledgeChunk, deep_merge, to_jsonable
 from .platform import PlatformGateway
 from .rag.embedding import build_embedding_provider
@@ -102,7 +102,8 @@ class MessagePlatformHelper:
         trace = TraceContext.from_request(request)
         tenant_context = TenantContext.from_request(request)
         metrics = RequestMetrics()
-        memory = self.memory_manager.load(request.session_id)
+        storage_session_id = _tenant_scoped_session_id(request.tenant_id, request.session_id)
+        memory = self.memory_manager.load(storage_session_id)
         memory.profile.user_id = request.user_id or memory.profile.user_id
         memory.profile.tenant_id = request.tenant_id or memory.profile.tenant_id
         memory.profile.locale = request.locale or memory.profile.locale
@@ -158,7 +159,7 @@ class MessagePlatformHelper:
             ok=ok,
             session_id=request.session_id,
             decision=decision,
-            memory=memory,
+            memory=_memory_for_display(memory, request.session_id),
             retrieved=retrieved,
             results=results,
             issues=issues,
@@ -191,15 +192,26 @@ class MessagePlatformHelper:
         )
         return response
 
-    def load_memory_for_display(self, session_id: str):
-        memory = self.memory_manager.load(session_id)
+    def load_memory_for_display(self, session_id: str, tenant_id: str = ""):
+        storage_session_id = _tenant_scoped_session_id(tenant_id, session_id)
+        memory = self.memory_manager.load(storage_session_id)
         list_runs = getattr(self.memory_manager.store, "list_runs", None)
         if not callable(list_runs):
-            return memory
-        recent_messages = _messages_from_runs(list_runs(session_id, limit=20))
+            return _memory_for_display(memory, session_id)
+        recent_messages = _messages_from_runs(list_runs(storage_session_id, limit=20))
         if recent_messages:
             memory.recent_messages = recent_messages[-self.memory_manager.policy.recent_message_limit :]
-        return memory
+        return _memory_for_display(memory, session_id)
+
+    def list_memory_sessions_for_display(self, tenant_id: str = "") -> List[JsonDict]:
+        list_sessions = getattr(self.memory_manager.store, "list_sessions", None)
+        if not callable(list_sessions):
+            return []
+        return [
+            item
+            for item in (_session_for_display(session, tenant_id) for session in list_sessions())
+            if item
+        ]
 
     def ingest_knowledge(self, title: str, content: str, source: str = "manual", tags: List[str] | None = None, replace: bool = True) -> JsonDict:
         before = self.knowledge_base.count()
@@ -268,7 +280,7 @@ class MessagePlatformHelper:
     def _save_run(self, request: AssistantRequest, response: HelperResponse) -> None:
         store = self.memory_manager.store
         if hasattr(store, "save_run"):
-            store.save_run(request.session_id, to_jsonable(request), to_jsonable(response))
+            store.save_run(_tenant_scoped_session_id(request.tenant_id, request.session_id), to_jsonable(request), to_jsonable(response))
 
     def _hydrate_memory_from_runs(self, memory) -> object:
         if memory.facts.get("operationHistory"):
@@ -386,6 +398,42 @@ def _memory_prompt_view(memory) -> JsonDict:
         "facts": facts,
         "recent_messages": list(payload.get("recent_messages") or payload.get("recentMessages") or [])[-12:],
     }
+
+
+def _tenant_scoped_session_id(tenant_id: str, session_id: str) -> str:
+    tenant = str(tenant_id or "").strip()
+    session = str(session_id or "default").strip() or "default"
+    return f"{tenant}::{session}" if tenant else session
+
+
+def _unscoped_session_id(storage_session_id: str, tenant_id: str = "") -> str:
+    prefix = f"{tenant_id}::" if tenant_id else ""
+    if prefix and storage_session_id.startswith(prefix):
+        return storage_session_id[len(prefix) :]
+    return storage_session_id.split("::", 1)[1] if "::" in storage_session_id else storage_session_id
+
+
+def _memory_for_display(memory, session_id: str):
+    payload = to_jsonable(memory)
+    payload["session_id"] = session_id
+    payload["sessionId"] = session_id
+    return memory_from_dict(payload)
+
+
+def _session_for_display(session: JsonDict, tenant_id: str) -> JsonDict | None:
+    storage_session_id = str(session.get("sessionId") or session.get("session_id") or "")
+    if not storage_session_id:
+        return None
+    if tenant_id:
+        prefix = f"{tenant_id}::"
+        if not storage_session_id.startswith(prefix):
+            return None
+        display_session_id = storage_session_id[len(prefix) :]
+    else:
+        if "::" in storage_session_id:
+            return None
+        display_session_id = storage_session_id
+    return {**session, "sessionId": display_session_id, "session_id": display_session_id}
 
 
 def _messages_from_runs(runs: List[JsonDict]) -> List[JsonDict]:

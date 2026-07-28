@@ -170,6 +170,34 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual([item["text"] for item in memory.recent_messages], ["question", "real answer"])
 
+    def test_memory_history_is_tenant_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            llm = RuleBasedLLMClient()
+            store = InMemoryMemoryStore({})
+            helper = MessagePlatformHelper(
+                settings=Settings(data_dir=root),
+                llm=llm,
+                memory_manager=MemoryManager(store, llm),
+                knowledge_base=InMemoryKnowledgeBase(),
+                platform=PlatformGateway(),
+                counter_store=MemoryCounterStore({}),
+                rag_service=build_rag_service(KnowledgeBaseRetriever(InMemoryKnowledgeBase())),
+            )
+            helper.handle(AssistantRequest(text="tenant a question", session_id="shared", tenant_id="tenant-a", payload={}, dry_run=True))
+            helper.handle(AssistantRequest(text="tenant b question", session_id="shared", tenant_id="tenant-b", payload={}, dry_run=True))
+
+            tenant_a_memory = helper.load_memory_for_display("shared", "tenant-a")
+            tenant_b_memory = helper.load_memory_for_display("shared", "tenant-b")
+            tenant_a_sessions = helper.list_memory_sessions_for_display("tenant-a")
+            tenant_b_sessions = helper.list_memory_sessions_for_display("tenant-b")
+
+        self.assertIn("tenant a question", [item["text"] for item in tenant_a_memory.recent_messages])
+        self.assertNotIn("tenant b question", [item["text"] for item in tenant_a_memory.recent_messages])
+        self.assertIn("tenant b question", [item["text"] for item in tenant_b_memory.recent_messages])
+        self.assertEqual([item["sessionId"] for item in tenant_a_sessions], ["shared"])
+        self.assertEqual([item["sessionId"] for item in tenant_b_sessions], ["shared"])
+
     def test_chat_recall_hydrates_operation_history_from_saved_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
