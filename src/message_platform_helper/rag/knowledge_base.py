@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import overload
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..models import JsonDict, KnowledgeChunk
@@ -29,7 +29,7 @@ from .repository.utils import chunk_to_knowledge, stable_uuid
 LOGGER = logging.getLogger(__name__)
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_.#/-]+|[\u4e00-\u9fff]")
 DEFAULT_KNOWLEDGE_DIR = Path(__file__).resolve().parents[3] / "knowledge"
-DEFAULT_KNOWLEDGE_EXTENSIONS = {".md", ".pdf", ".docx"}
+DEFAULT_KNOWLEDGE_EXTENSIONS = {".md", ".pdf", ".docx", ".xlsx"}
 
 
 def tokenize(text: str) -> list[str]:
@@ -229,6 +229,81 @@ class KnowledgeBase:
             session.commit()
             return chunk_count
 
+    def delete_source_prefix(self, source_prefix: str) -> int:
+        source_prefix = str(source_prefix or "").strip()
+        if not source_prefix:
+            return 0
+        with self._factory() as session:
+            ids = [row[0] for row in session.execute(select(DocumentRecord.id).where(DocumentRecord.source.startswith(source_prefix))).all()]
+            if not ids:
+                return 0
+            chunk_count = int(session.scalar(select(func.count()).select_from(ChunkRecord).where(ChunkRecord.document_id.in_(ids))) or 0)
+            session.execute(delete(DocumentRecord).where(DocumentRecord.id.in_(ids)))
+            session.commit()
+            return chunk_count
+
+    def document_versions(self, source_prefix: str) -> dict[str, str]:
+        source_prefix = str(source_prefix or "").strip()
+        if not source_prefix:
+            return {}
+        with self._factory() as session:
+            rows = session.execute(
+                select(DocumentRecord.source, DocumentRecord.metadata_).where(
+                    DocumentRecord.source.startswith(source_prefix)
+                )
+            ).all()
+        versions: dict[str, str] = {}
+        for source, metadata in rows:
+            file_sha1 = str((metadata or {}).get("file_sha1") or "")
+            if file_sha1:
+                versions[str(source)] = file_sha1
+        return versions
+
+    def delete_file_sources_under(self, directory: Path) -> int:
+        root = Path(directory).resolve()
+        with self._factory() as session:
+            rows = session.execute(select(DocumentRecord.id, DocumentRecord.source)).all()
+            ids = [
+                document_id
+                for document_id, source in rows
+                if not str(source).startswith("default:") and _source_is_under_directory(str(source), root)
+            ]
+            if not ids:
+                return 0
+            chunk_count = int(
+                session.scalar(
+                    select(func.count()).select_from(ChunkRecord).where(ChunkRecord.document_id.in_(ids))
+                )
+                or 0
+            )
+            session.execute(delete(DocumentRecord).where(DocumentRecord.id.in_(ids)))
+            session.commit()
+            return chunk_count
+
+    def delete_legacy_file_versions(self, file_name: str) -> int:
+        file_name = Path(str(file_name or "")).name
+        if not file_name:
+            return 0
+        with self._factory() as session:
+            ids = [
+                row[0]
+                for row in session.execute(
+                    select(DocumentRecord.id).where(
+                        or_(
+                            DocumentRecord.source == f"default:{file_name}",
+                            DocumentRecord.source.endswith(f"/{file_name}"),
+                            DocumentRecord.source.endswith(f"\\{file_name}"),
+                        )
+                    )
+                ).all()
+            ]
+            if not ids:
+                return 0
+            chunk_count = int(session.scalar(select(func.count()).select_from(ChunkRecord).where(ChunkRecord.document_id.in_(ids))) or 0)
+            session.execute(delete(DocumentRecord).where(DocumentRecord.id.in_(ids)))
+            session.commit()
+            return chunk_count
+
     def search(self, query: str, *, limit: int = 5, tags: list[str] | None = None) -> list[KnowledgeChunk]:
         from .repository import VectorRepository
         from .retrieval import HybridRetriever, KeywordRetriever, VectorRetriever
@@ -298,6 +373,7 @@ class KnowledgeBase:
         replaced_chunks = 0
         if replace:
             replaced_chunks += self.delete_document_key(str(document.metadata.extra.get("document_key") or ""))
+            replaced_chunks += self.delete_legacy_file_versions(file_name)
             replaced_chunks += self.delete_document(document.title, document.metadata.source)
         with self._factory() as session:
             DocumentRepository(session).save(document)
@@ -380,23 +456,48 @@ def normalize_content(content: str) -> str:
 
 
 def seed_default_knowledge(kb: KnowledgeBase, knowledge_dir: Path | None = None) -> None:
-    documents = load_default_knowledge_documents(knowledge_dir or DEFAULT_KNOWLEDGE_DIR)
-    if not documents:
+    root = knowledge_dir or DEFAULT_KNOWLEDGE_DIR
+    if not root.exists():
         return
+    paths = sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in DEFAULT_KNOWLEDGE_EXTENSIONS
+    )
+    existing_versions = _document_versions(kb, "default:")
+    active_sources: set[str] = set()
+
     kb.delete_source("default")
-    for knowledge_document in documents:
-        document = Document(
-            id=stable_document_id(knowledge_document.source, knowledge_document.title, knowledge_document.content),
-            title=knowledge_document.title,
-            content=knowledge_document.content,
-            metadata=DocumentMetadata(
-                format=knowledge_document.format,
-                source=knowledge_document.source,
-                tags=knowledge_document.tags,
-            ),
-        )
-        strategy = MarkdownChunkStrategy() if knowledge_document.format == "markdown" else None
-        kb.ingest_document(document, replace=True, strategy=strategy)
+    cleanup_legacy_sources = getattr(kb, "delete_file_sources_under", None)
+    if callable(cleanup_legacy_sources):
+        cleanup_legacy_sources(root)
+    for path in paths:
+        source = _default_document_source(path, root)
+
+        active_sources.add(source)
+        try:
+            file_sha1 = _file_sha1(path)
+            if existing_versions.get(source) == file_sha1:
+                continue
+            knowledge_document = _read_knowledge_document(path, root)
+            document = Document(
+                id=stable_document_id(knowledge_document.source, knowledge_document.title, knowledge_document.content),
+                title=knowledge_document.title,
+                content=knowledge_document.content,
+                metadata=DocumentMetadata(
+                    format=knowledge_document.format,
+                    source=knowledge_document.source,
+                    tags=knowledge_document.tags,
+                    extra={"file_sha1": file_sha1},
+                ),
+            )
+            strategy = MarkdownChunkStrategy() if knowledge_document.format == "markdown" else None
+            kb.ingest_document(document, replace=True, strategy=strategy)
+        except Exception:
+            LOGGER.exception("Failed to sync knowledge file: %s", path)
+
+    for source in set(existing_versions) - active_sources:
+        kb.delete_source(source)
 
 
 def load_default_knowledge_documents(knowledge_dir: Path | None = None) -> list[KnowledgeDocument]:
@@ -427,6 +528,30 @@ def _default_document_source(path: Path, root: Path) -> str:
     except ValueError:
         relative = Path(path.name)
     return f"default:{relative.as_posix()}"
+
+
+def _document_versions(kb: KnowledgeBase, source_prefix: str) -> dict[str, str]:
+    loader = getattr(kb, "document_versions", None)
+    return dict(loader(source_prefix)) if callable(loader) else {}
+
+
+def _file_sha1(path: Path) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _source_is_under_directory(source: str, root: Path) -> bool:
+    candidate = Path(source)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        candidate.resolve().relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _chunk_id(title: str, content: str, source: str) -> str:

@@ -104,6 +104,9 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(response.retrieved)
         answer = response.results[0].output.get("answer", "")
         self.assertIn("排查", answer)
+        stored = helper.memory_manager.load("s-knowledge")
+        self.assertIn(answer, stored.recent_messages[-1]["text"])
+        self.assertNotEqual(stored.recent_messages[-1]["text"], "knowledge:ok")
 
     def test_chat_recall_uses_operation_history_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,6 +145,30 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(response.memory.facts.get("operationHistory"))
         answer = response.results[0].output.get("answer", "")
         self.assertIn("Purchase order notice", answer)
+
+    def test_display_memory_uses_saved_run_response_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            llm = RuleBasedLLMClient()
+            store = InMemoryMemoryStore({})
+            helper = MessagePlatformHelper(
+                settings=Settings(data_dir=root),
+                llm=llm,
+                memory_manager=MemoryManager(store, llm),
+                knowledge_base=InMemoryKnowledgeBase(),
+                platform=PlatformGateway(),
+                counter_store=MemoryCounterStore({}),
+                rag_service=build_rag_service(KnowledgeBaseRetriever(InMemoryKnowledgeBase())),
+            )
+            store.save_run(
+                "s-display",
+                {"text": "question"},
+                {"results": [{"agent": "knowledge", "ok": True, "output": {"answer": "real answer"}}]},
+            )
+
+            memory = helper.load_memory_for_display("s-display")
+
+        self.assertEqual([item["text"] for item in memory.recent_messages], ["question", "real answer"])
 
     def test_chat_recall_hydrates_operation_history_from_saved_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

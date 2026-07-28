@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 const DEFAULT_SESSION = "web-demo";
@@ -23,14 +23,20 @@ function App() {
   const [trace, setTrace] = useState([]);
   const [draft, setDraft] = useState({});
   const [stateText, setStateText] = useState("Ready");
+  const [thinkingStage, setThinkingStage] = useState("");
   const [decisionLine, setDecisionLine] = useState("等待请求");
   const [health, setHealth] = useState({ llm: "Local", memory: "PostgreSQL", rag: "Ready" });
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
     loadHealth();
     loadSessions();
     loadMemory(sessionId);
   }, []);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, thinkingStage]);
 
   async function loadHealth() {
     try {
@@ -93,6 +99,7 @@ function App() {
 
   async function sendChat(event) {
     event.preventDefault();
+    if (thinkingStage) return;
     const text = prompt.trim();
     if (!text) return;
     let requestPayload;
@@ -120,6 +127,7 @@ function App() {
     setMessages((items) => [...items, { role: "user", text }]);
     setTrace([{ label: "Started", text: "request queued", ok: true }]);
     setStateText("Running");
+    setThinkingStage("正在接收并理解你的问题");
 
     try {
       await streamChat(body);
@@ -128,6 +136,8 @@ function App() {
     } catch (error) {
       setStateText("Failed");
       setMessages((items) => [...items, { role: "assistant", text: String(error.message || error), error: true }]);
+    } finally {
+      setThinkingStage("");
     }
   }
 
@@ -169,23 +179,27 @@ function App() {
   function handleStreamEvent(event) {
     if (event.type === "Started" || event.type === "Running") {
       setStateText(event.type);
+      setThinkingStage(event.type === "Started" ? "正在建立请求" : "正在处理请求");
       setTrace((items) => [...items, { label: event.type, text: event.data?.message || "", ok: true }]);
       return;
     }
     if (event.type === "Reasoning") {
       const decision = event.data?.decision || {};
       const agents = decision.selected_agents || decision.selectedAgents || [];
+      setThinkingStage("正在分析并选择处理方式");
       setDecisionLine(`${agents.join(" / ") || "no agent"}, confidence ${decision.confidence ?? "-"}`);
       setTrace((items) => [...items, { label: "Reasoning", text: decision.rationale || decision.intent || "decision ready", ok: true }]);
       return;
     }
     if (event.type === "ToolCall" && event.data?.step) {
       const step = event.data.step;
+      setThinkingStage(`正在执行 ${step.agent || "处理任务"}`);
       setTrace((items) => [...items, { label: `${step.agent} / ${step.action}`, text: [step.thought, step.observation].filter(Boolean).join("\n"), ok: step.status === "ok" }]);
       return;
     }
     if (event.type === "Source") {
       const source = event.data?.source || {};
+      setThinkingStage("正在查找相关资料");
       setTrace((items) => [...items, { label: "Source", text: source.title || source.source || source.id || "", ok: true }]);
       return;
     }
@@ -195,6 +209,7 @@ function App() {
   }
 
   function renderResponse(response) {
+    setThinkingStage("");
     const decision = response.decision || {};
     const agents = decision.selected_agents || decision.selectedAgents || [];
     const issues = response.issues || [];
@@ -332,11 +347,13 @@ function App() {
         <section className="chat-panel">
           <div className="messages" aria-live="polite">
             {messages.map((message, index) => <Message key={index} message={message} />)}
+            {thinkingStage ? <ThinkingMessage stage={thinkingStage} /> : null}
+            <div ref={messagesEndRef} aria-hidden="true"></div>
           </div>
           <form className="composer" id="chatForm" onSubmit={sendChat}>
             <textarea value={prompt} rows="3" onChange={(event) => setPrompt(event.target.value)} />
             <div className="composer-footer">
-              <button type="submit" className="primary">发送</button>
+              <button type="submit" className="primary" disabled={Boolean(thinkingStage)}>发送</button>
               <span id="requestState">{stateText}</span>
             </div>
           </form>
@@ -407,6 +424,23 @@ function Message({ message }) {
         <div className="bubble-title">{message.role === "user" ? "User" : "Assistant"}</div>
         <p>{message.text}</p>
         {message.chips?.length ? <div className="agent-chips">{message.chips.map((chip) => <span className="chip" key={chip}>{chip}</span>)}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function ThinkingMessage({ stage }) {
+  return (
+    <div className="message assistant thinking-message" role="status" aria-label={stage}>
+      <div className="avatar">A</div>
+      <div className="bubble">
+        <div className="bubble-title">Assistant</div>
+        <div className="thinking-content">
+          <span>{stage}</span>
+          <span className="thinking-dots" aria-hidden="true">
+            <i></i><i></i><i></i>
+          </span>
+        </div>
       </div>
     </div>
   );

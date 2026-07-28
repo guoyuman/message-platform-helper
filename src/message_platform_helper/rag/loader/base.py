@@ -44,9 +44,9 @@ def default_loader_factory() -> LoaderFactory:
     from .markdown_loader import MarkdownLoader
     from .pdf_loader import PdfLoader
     from .text_loader import TextLoader
+    from .xlsx_loader import XlsxLoader
 
     factory = LoaderFactory()
-    for loader_cls in (TextLoader, MarkdownLoader, PdfLoader, DocxLoader):
+    for loader_cls in (TextLoader, MarkdownLoader, PdfLoader, DocxLoader, XlsxLoader):
         factory.register(loader_cls)
     return factory
-

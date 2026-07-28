@@ -30,6 +30,7 @@ class OpenAIEmbeddingProvider:
     base_url: str = ""
     dimensions: int = 1536
     timeout_seconds: int = 30
+    batch_size: int = 10
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         key = self.api_key or os.environ.get("MESSAGE_HELPER_EMBEDDING_API_KEY", "")
@@ -37,6 +38,12 @@ class OpenAIEmbeddingProvider:
             raise RuntimeError("Aliyun embedding provider requires DASHSCOPE_API_KEY or MESSAGE_HELPER_EMBEDDING_API_KEY.")
 
         url = _embedding_url(self.base_url or os.environ.get("MESSAGE_HELPER_EMBEDDING_BASE_URL", ""))
+        batch_size = max(1, int(os.environ.get("MESSAGE_HELPER_EMBEDDING_BATCH_SIZE", self.batch_size)))
+        if len(texts) > batch_size:
+            embeddings: list[list[float]] = []
+            for start in range(0, len(texts), batch_size):
+                embeddings.extend(self.embed(texts[start : start + batch_size]))
+            return embeddings
         payload = _embedding_payload(
             texts,
             self.model or os.environ.get("MESSAGE_HELPER_EMBEDDING_MODEL", "text-embedding-v2"),

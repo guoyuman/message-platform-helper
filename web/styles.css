@@ -356,6 +356,11 @@ textarea:focus {
   background: var(--teal-dark);
 }
 
+.primary:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -447,6 +452,64 @@ textarea:focus {
   margin: 0;
   line-height: 1.6;
   white-space: pre-wrap;
+}
+
+.thinking-message .bubble {
+  min-width: 220px;
+  box-shadow: none;
+}
+
+.thinking-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 32px;
+  height: 12px;
+}
+
+.thinking-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--teal);
+  animation: thinking-pulse 1.2s infinite ease-in-out;
+}
+
+.thinking-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.thinking-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes thinking-pulse {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-dots i {
+    animation: none;
+  }
 }
 
 .agent-chips {

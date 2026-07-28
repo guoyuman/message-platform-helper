@@ -113,6 +113,44 @@ class ReasoningRagMemoryTests(unittest.TestCase):
         self.assertIn("ops", results[0].tags)
         self.assertFalse(legacy_results)
 
+    def test_default_knowledge_only_reingests_changed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            knowledge_dir = Path(tmp) / "knowledge"
+            knowledge_dir.mkdir()
+            guide = knowledge_dir / "ops.md"
+            guide.write_text("# Ops\n\nVersion one.", encoding="utf-8")
+            kb = InMemoryKnowledgeBase()
+            kb.ingest_file(guide)
+
+            seed_default_knowledge(kb, knowledge_dir)
+            first_ids = set(kb.chunks)
+            seed_default_knowledge(kb, knowledge_dir)
+            unchanged_ids = set(kb.chunks)
+            guide.write_text("# Ops\n\nVersion two.", encoding="utf-8")
+            seed_default_knowledge(kb, knowledge_dir)
+
+        self.assertEqual(unchanged_ids, first_ids)
+        self.assertNotEqual(set(kb.chunks), first_ids)
+        self.assertTrue(kb.search("Version two", limit=1))
+        self.assertFalse(
+            any(
+                chunk.source.endswith("ops.md") and not chunk.source.startswith("default:")
+                for chunk in kb.chunks.values()
+            )
+        )
+
+    def test_invalid_knowledge_file_does_not_block_other_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            knowledge_dir = Path(tmp) / "knowledge"
+            knowledge_dir.mkdir()
+            (knowledge_dir / "broken.pdf").write_bytes(b"not a pdf")
+            (knowledge_dir / "working.md").write_text("# Working guide\n\nHealthy content.", encoding="utf-8")
+            kb = InMemoryKnowledgeBase()
+
+            seed_default_knowledge(kb, knowledge_dir)
+
+        self.assertTrue(kb.search("Healthy content", limit=1))
+
     def test_default_knowledge_is_seeded_from_pdf_documents_under_knowledge_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

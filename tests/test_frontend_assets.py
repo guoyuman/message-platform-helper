@@ -20,7 +20,12 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("/src/main.jsx", script)
         self.assertIn("/api/chat", react_entry)
         self.assertIn("/api/memory/sessions", react_entry)
+        self.assertIn("ThinkingMessage", react_entry)
+        self.assertIn("thinkingStage", react_entry)
+        self.assertNotIn("Knowledge Update", react_entry)
+        self.assertNotIn("knowledgePath", react_entry)
         self.assertIn(".app-shell", styles)
+        self.assertIn(".thinking-dots", styles)
         self.assertIn("vite", package_json)
         self.assertIn("127.0.0.1:8790", vite_config)
 

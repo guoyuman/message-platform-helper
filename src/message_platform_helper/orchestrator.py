@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -190,6 +191,16 @@ class MessagePlatformHelper:
         )
         return response
 
+    def load_memory_for_display(self, session_id: str):
+        memory = self.memory_manager.load(session_id)
+        list_runs = getattr(self.memory_manager.store, "list_runs", None)
+        if not callable(list_runs):
+            return memory
+        recent_messages = _messages_from_runs(list_runs(session_id, limit=20))
+        if recent_messages:
+            memory.recent_messages = recent_messages[-self.memory_manager.policy.recent_message_limit :]
+        return memory
+
     def ingest_knowledge(self, title: str, content: str, source: str = "manual", tags: List[str] | None = None, replace: bool = True) -> JsonDict:
         before = self.knowledge_base.count()
         chunks = self.knowledge_base.ingest_text(title, content, source=source, tags=tags, replace=replace)
@@ -251,11 +262,8 @@ class MessagePlatformHelper:
         return self.agent_registry.resolve(names)
 
     def _response_summary(self, results: List[AgentResult]) -> str:
-        parts = []
-        for result in results:
-            status = "ok" if result.ok else "failed"
-            parts.append(f"{result.agent}:{status}")
-        return ", ".join(parts)
+        parts = [_result_text(result.agent, result.ok, result.output, result.issues) for result in results]
+        return "\n\n".join(part for part in parts if part)
 
     def _save_run(self, request: AssistantRequest, response: HelperResponse) -> None:
         store = self.memory_manager.store
@@ -378,6 +386,81 @@ def _memory_prompt_view(memory) -> JsonDict:
         "facts": facts,
         "recent_messages": list(payload.get("recent_messages") or payload.get("recentMessages") or [])[-12:],
     }
+
+
+def _messages_from_runs(runs: List[JsonDict]) -> List[JsonDict]:
+    messages: List[JsonDict] = []
+    for run in reversed(runs):
+        request = run.get("request") or {}
+        response = run.get("response") or {}
+        created_at = run.get("created_at") or now_from_response(response)
+        request_text = str(request.get("text") or "").strip()
+        if request_text:
+            messages.append({"role": "user", "text": request_text, "at": created_at})
+        response_text = _response_text(response)
+        if response_text:
+            messages.append({"role": "assistant", "text": response_text, "at": created_at})
+    return messages
+
+
+def _response_text(response: JsonDict) -> str:
+    results = response.get("results") or []
+    issues = response.get("issues") or []
+    parts = []
+    for result in results:
+        parts.append(
+            _result_text(
+                str(result.get("agent") or ""),
+                bool(result.get("ok", True)),
+                dict(result.get("output") or {}),
+                list(result.get("issues") or []),
+            )
+        )
+    parts.extend(_issue_text(issue) for issue in issues)
+    return "\n\n".join(part for part in parts if part)
+
+
+def _result_text(agent: str, ok: bool, output: JsonDict, issues: List[JsonDict] | None = None) -> str:
+    for key in ("answer", "message", "text", "content"):
+        value = output.get(key)
+        if value:
+            return str(value)
+    summary = output.get("summary")
+    details = _human_details(output)
+    if summary and details:
+        return f"{summary}\n{details}"
+    if summary:
+        return str(summary)
+    issue_lines = [_issue_text(issue) for issue in issues or []]
+    if issue_lines:
+        return "\n".join(line for line in issue_lines if line)
+    return f"{agent}: {'completed' if ok else 'failed'}" if agent else ""
+
+
+def _human_details(output: JsonDict) -> str:
+    lines = []
+    for item in output.get("translatedTemplates") or []:
+        if isinstance(item, dict):
+            label = item.get("templateName") or item.get("templateCode") or item.get("templateId")
+            if label:
+                lines.append(f"- {label}")
+    for key in ("emailConfig", "channelSaveResponse", "channelTestResponse", "citations"):
+        value = output.get(key)
+        if value:
+            lines.append(f"{key}: {json.dumps(_compact_value(value), ensure_ascii=False, default=str)}")
+    return "\n".join(lines)
+
+
+def _issue_text(issue: JsonDict) -> str:
+    message = str(issue.get("message") or "").strip()
+    if not message:
+        return ""
+    severity = str(issue.get("severity") or "info")
+    return f"{severity}: {message}"
+
+
+def now_from_response(response: JsonDict) -> object:
+    return (response.get("memory") or {}).get("updated_at") or (response.get("memory") or {}).get("updatedAt") or time.time()
 
 
 def _operation_history_patch(request: AssistantRequest, decision, results: List[AgentResult]) -> JsonDict:

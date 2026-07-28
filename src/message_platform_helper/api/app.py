@@ -37,7 +37,9 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
 
     @app.get("/api/memory")
     async def memory(sessionId: str = "default"):
-        return {"ok": True, "memory": to_jsonable(helper.memory_manager.load(sessionId))}
+        load_for_display = getattr(helper, "load_memory_for_display", None)
+        memory_payload = load_for_display(sessionId) if callable(load_for_display) else helper.memory_manager.load(sessionId)
+        return {"ok": True, "memory": to_jsonable(memory_payload)}
 
     @app.get("/api/memory/sessions")
     async def memory_sessions():

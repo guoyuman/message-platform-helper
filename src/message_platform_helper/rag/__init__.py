@@ -38,6 +38,7 @@ _EXPORT_MODULES = {
     "RuleBasedReranker": ".reranker",
     "ScoreReranker": ".reranker",
     "VectorRetriever": ".retrieval",
+    "XlsxLoader": ".loader",
     "bm25_like": ".knowledge_base",
     "build_rag_service": ".service",
     "build_postgres_rag_service": ".service",

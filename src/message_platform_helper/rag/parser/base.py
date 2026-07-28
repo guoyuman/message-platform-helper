@@ -21,6 +21,6 @@ def parser_for(document: Document) -> DocumentParser:
         "markdown": MarkdownParser(),
         "pdf": PdfParser(),
         "docx": DocxParser(),
+        "xlsx": DocxParser(),
     }
     return parsers.get(document.metadata.format, PdfParser())
-
