@@ -50,7 +50,7 @@ class PlatformGateway:
             return {
                 "ok": True,
                 "status": 1,
-                "data": {"templates": stored} if self.mock_database_url else _mock_template_list(payload),
+                "data": {"templates": stored or _mock_template_details_for_scope(payload)} if self.mock_database_url else _mock_template_list(payload),
                 "endpoint": "/msgTemplate/findMsgTemps",
                 "payload": payload,
             }
@@ -233,8 +233,8 @@ def _mock_domain_tree() -> list[JsonDict]:
                     "name": "采购管理",
                     "code": "purchase_manage",
                     "children": [
-                        {"name": "采购订单", "documentId": "purchase_order", "children": []},
-                        {"name": "请购单",  "documentId": "requisition_order", "children": []}
+                        {"name": "采购订单", "code": "purchase_order", "documentId": "purchase_order", "children": []},
+                        {"name": "请购单", "code": "requisition_order", "documentId": "requisition_order", "children": []},
                     ],
                 }
             ],
@@ -264,6 +264,9 @@ def _mock_verify_user(payload: JsonDict) -> str:
 
 
 def _mock_template_detail(template_id: str, scope: JsonDict) -> JsonDict:
+    default_detail = _mock_template_detail_by_id(template_id)
+    if default_detail:
+        return default_detail
     template_code = f"{template_id}-code"
     message_temp = {
         "id": template_id,
@@ -304,49 +307,7 @@ def _mock_template_detail(template_id: str, scope: JsonDict) -> JsonDict:
 
 
 def _mock_template_list(payload: JsonDict) -> JsonDict:
-    templates_vo = [
-        {
-            "id": "tpl-001",
-            "templateName": "Purchase requisition notice",
-            "typeName": "请购单保存",
-            "templateCode": "purchase_requisition_notice",
-            "enable": 1,
-            "tenantDefault": 0,
-            "templateLevel": 3,
-            "firstRegion": "",
-            "firstRegionName": [],
-            "groupCode": "businessprocess",
-            "documentId": "PR001",
-            "appCode": payload.get("appCode") or "",
-            "orgId": payload.get("orgId") or "666666",
-            "domain": payload.get("domain") or "",
-            "typeId": "type-001",
-            "typeCode": "businessprocess",
-            "currentOrgTemps": [
-                {
-                    "id": "tpl-001",
-                    "templateName": "Purchase requisition notice",
-                    "typeName": "请购单保存",
-                    "templateCode": "purchase_requisition_notice",
-                    "enable": 1,
-                    "tenantDefault": 0,
-                    "templateLevel": 3,
-                    "firstRegion": "",
-                    "firstRegionName": [],
-                    "groupCode": "businessprocess",
-                    "documentId": "PR001",
-                    "appCode": payload.get("appCode") or "",
-                    "orgId": payload.get("orgId") or "666666",
-                    "uri": payload.get("uri") or "",
-                    "srcType": payload.get("srcType") or "",
-                    "metadataId": payload.get("metadataId") or "",
-                    "domain": payload.get("domain") or "",
-                    "typeId": "type-001",
-                    "typeCode": "businessprocess",
-                }
-            ],
-        }
-    ]
+    templates_vo = [_template_list_item_from_detail(detail, payload) for detail in _mock_template_details_for_scope(payload)]
     return {
         "templatesVOList": templates_vo,
         "msgTempTypeCatalogVOList": [
@@ -357,6 +318,340 @@ def _mock_template_list(payload: JsonDict) -> JsonDict:
             }
         ],
     }
+
+
+def seed_mock_templates(database_url: str) -> JsonDict:
+    """Restore local template mock snapshots used by dry-run template sync."""
+
+    if not database_url:
+        return {"ok": False, "seeded": 0, "error": "database_url is required"}
+    seeded = 0
+    errors: list[str] = []
+    for payload in _default_mock_template_snapshots():
+        result = _save_mock_template_snapshot(payload, database_url)
+        if result.get("persisted"):
+            seeded += 1
+        elif result.get("error"):
+            errors.append(str(result["error"]))
+    return {"ok": not errors, "seeded": seeded, "errors": errors}
+
+
+def _default_mock_template_snapshots() -> list[JsonDict]:
+    return [
+        _template_detail(
+            template_id="tpl-requisition-submit",
+            template_name="请购单提交通知",
+            template_code="requisition_submit_notice",
+            description="请购单提交后通知审批人处理",
+            document_id="requisition_order",
+            business_object_code="requisition_order",
+            app_code="purchase_manage",
+            domain="purchase_supply",
+            contents=[
+                _content(
+                    "tpl-requisition-submit-mail-zh",
+                    "mail",
+                    "zh_CN",
+                    "请购单 ${billNo} 待审批",
+                    '<p>您好，{{approveUser}}：</p><p>请购单 <b>${billNo}</b> 已由 {{applyUser}} 提交，金额为 ${amount}，请及时审批。</p><p>采购组织：[md#purchaseOrg.name]</p>',
+                    "html",
+                    extend_content={
+                        "editorVersion": "v2.0",
+                        "lastEditUser": "mock-user",
+                        "channelSetting": {"id": "mail-channel-default", "channelName": "默认邮件通道"},
+                        "printAttachmentLocale": "zh_CN",
+                        "variableDescription": [
+                            {"code": "billNo", "name": "单据编号"},
+                            {"code": "applyUser", "name": "申请人"},
+                            {"code": "amount", "name": "金额"},
+                        ],
+                    },
+                ),
+                _content(
+                    "tpl-requisition-submit-mail-en",
+                    "mail",
+                    "en_US",
+                    "Purchase requisition ${billNo} requires approval",
+                    "<p>Hello {{approveUser}},</p><p>purchase requisition <b>${billNo}</b> was submitted by {{applyUser}} for ${amount}. Please review it.</p><p>Purchase organization: [md#purchaseOrg.name]</p>",
+                    "html",
+                    extend_content={
+                        "editorVersion": "v2.0",
+                        "lastEditUser": "mock-user",
+                        "channelSetting": {"id": "mail-channel-default", "channelName": "Default mail channel"},
+                        "printAttachmentLocale": "en_US",
+                    },
+                ),
+                _content(
+                    "tpl-requisition-submit-uspace-zh",
+                    "uspace",
+                    "zh_CN",
+                    "请购单 ${billNo} 待审批",
+                    "请处理 {{applyUser}} 提交的请购单 #{billNo}，金额 ${amount}。",
+                    "text",
+                    extend_content={
+                        "webUrl": "/yonbip/purchase/requisition/detail?billNo=${billNo}",
+                        "mUrl": "/mobile/purchase/requisition/${billNo}",
+                        "messageLevel": "normal",
+                        "editorVersion": "v2.0",
+                    },
+                ),
+                _content(
+                    "tpl-requisition-submit-uspace-en",
+                    "uspace",
+                    "en_US",
+                    "Purchase requisition ${billNo} requires approval",
+                    "Please process purchase requisition #{billNo} submitted by {{applyUser}} for ${amount}.",
+                    "text",
+                    extend_content={
+                        "webUrl": "/yonbip/purchase/requisition/detail?billNo=${billNo}",
+                        "mUrl": "/mobile/purchase/requisition/${billNo}",
+                        "messageLevel": "normal",
+                        "editorVersion": "v2.0",
+                    },
+                ),
+                _content(
+                    "tpl-requisition-submit-sms-zh",
+                    "sms",
+                    "zh_CN",
+                    "【用友】",
+                    "请购单${billNo}已提交，请{{approveUser}}审批。",
+                    "text",
+                    extend_content={"smsType": "notice", "smsCategory": "mock-sms"},
+                ),
+                _content(
+                    "tpl-requisition-submit-sms-en",
+                    "sms",
+                    "en_US",
+                    "[Yonyou]",
+                    "Purchase requisition ${billNo} was submitted. Please approve it, {{approveUser}}.",
+                    "text",
+                    extend_content={"smsType": "notice", "smsCategory": "mock-sms"},
+                ),
+            ],
+        ),
+        _template_detail(
+            template_id="tpl-purchase-order-approved",
+            template_name="采购订单审批通过通知",
+            template_code="purchase_order_approved_notice",
+            description="采购订单审批通过后通知申请人",
+            document_id="purchase_order",
+            business_object_code="purchase_order",
+            app_code="purchase_manage",
+            domain="purchase_supply",
+            contents=[
+                _content(
+                    "tpl-purchase-order-approved-mail-zh",
+                    "mail",
+                    "zh_CN",
+                    "采购订单 ${orderNo} 已审批通过",
+                    '<p>您好 {{applyUser}}，采购订单 <b>${orderNo}</b> 已审批通过。</p><p>供应商：[md#supplier.name]，含税金额：${taxInclusiveAmount}</p>',
+                    "html",
+                    extend_content={
+                        "editorVersion": "v2.0",
+                        "lastEditUser": "mock-user",
+                        "channelSetting": {"id": "mail-channel-default", "channelName": "默认邮件通道"},
+                    },
+                ),
+                _content(
+                    "tpl-purchase-order-approved-mail-en",
+                    "mail",
+                    "en_US",
+                    "Purchase order ${orderNo} was approved",
+                    "<p>Hello {{applyUser}}, purchase order <b>${orderNo}</b> was approved.</p><p>Supplier: [md#supplier.name], amount with tax: ${taxInclusiveAmount}</p>",
+                    "html",
+                    extend_content={
+                        "editorVersion": "v2.0",
+                        "lastEditUser": "mock-user",
+                        "channelSetting": {"id": "mail-channel-default", "channelName": "Default mail channel"},
+                    },
+                ),
+                _content(
+                    "tpl-purchase-order-approved-uspace-zh",
+                    "uspace",
+                    "zh_CN",
+                    "采购订单 ${orderNo} 已通过",
+                    "采购订单 #{orderNo} 已审批通过，供应商：[md#supplier.name]。",
+                    "text",
+                    extend_content={
+                        "webUrl": "/yonbip/purchase/order/detail?orderNo=${orderNo}",
+                        "mUrl": "/mobile/purchase/order/${orderNo}",
+                        "messageLevel": "normal",
+                        "editorVersion": "v2.0",
+                    },
+                ),
+                _content(
+                    "tpl-purchase-order-approved-uspace-en",
+                    "uspace",
+                    "en_US",
+                    "Purchase order ${orderNo} was approved",
+                    "Purchase order #{orderNo} was approved. Supplier: [md#supplier.name].",
+                    "text",
+                    extend_content={
+                        "webUrl": "/yonbip/purchase/order/detail?orderNo=${orderNo}",
+                        "mUrl": "/mobile/purchase/order/${orderNo}",
+                        "messageLevel": "normal",
+                        "editorVersion": "v2.0",
+                    },
+                ),
+            ],
+        ),
+    ]
+
+
+def _template_detail(
+    *,
+    template_id: str,
+    template_name: str,
+    template_code: str,
+    description: str,
+    document_id: str,
+    business_object_code: str,
+    app_code: str,
+    domain: str,
+    contents: list[JsonDict],
+) -> JsonDict:
+    language_dict = {
+        "templateName": {
+            "zh_CN": {"id": f"{template_id}-name-zh", "value": template_name},
+            "en_US": {"id": f"{template_id}-name-en", "value": _english_template_name(template_code)},
+            "zh_TW": {"id": "", "value": ""},
+        },
+        "description": {
+            "zh_CN": {"id": f"{template_id}-desc-zh", "value": description},
+            "en_US": {"id": f"{template_id}-desc-en", "value": _english_description(template_code)},
+            "zh_TW": {"id": "", "value": ""},
+        },
+    }
+    message_temp = {
+        "id": template_id,
+        "templateName": template_name,
+        "templateCode": template_code,
+        "description": description,
+        "groupCode": "businessprocess",
+        "documentId": document_id,
+        "msgDocumentId": document_id,
+        "businessObjectCode": business_object_code,
+        "billNo": document_id,
+        "appCode": app_code,
+        "domain": domain,
+        "orgId": "666666",
+        "transId": "",
+        "uri": "",
+        "srcType": "businessprocess",
+        "typeId": "type-businessprocess",
+        "typeCode": "businessprocess",
+        "typeName": "业务流程",
+        "enable": 1,
+        "tenantDefault": 0,
+        "templateLevel": 3,
+        "wechatTempId": "",
+        "firstRegion": "",
+        "firstRegionName": [],
+        "languageDict": language_dict,
+        "metaDataTypeMapper": json.dumps(
+            {
+                "billNo": "单据编号",
+                "orderNo": "订单编号",
+                "applyUser": "申请人",
+                "approveUser": "审批人",
+                "amount": "金额",
+                "purchaseOrg.name": "采购组织",
+                "supplier.name": "供应商",
+            },
+            ensure_ascii=False,
+        ),
+    }
+    return {
+        "messageTempVO": message_temp,
+        "messageTemplateContentVOList": contents,
+    }
+
+
+def _content(
+    content_id: str,
+    channel_type: str,
+    language: str,
+    title: str,
+    content: str,
+    content_type: str,
+    *,
+    extend_content: JsonDict | None = None,
+) -> JsonDict:
+    extend_content = dict(extend_content or {})
+    return {
+        "id": content_id,
+        "key": content_id,
+        "channelType": channel_type,
+        "language": language,
+        "title": title,
+        "content": content,
+        "raw": content,
+        "contentType": content_type,
+        "extendContent": json.dumps(extend_content, ensure_ascii=False),
+        "messageTemplateAnnexPOList": [],
+        "annexIdList": [],
+        "status": "",
+        "target": False,
+    }
+
+
+def _english_template_name(template_code: str) -> str:
+    names = {
+        "requisition_submit_notice": "Purchase requisition submission notice",
+        "purchase_order_approved_notice": "Purchase order approval notice",
+    }
+    return names.get(template_code, template_code.replace("_", " ").title())
+
+
+def _english_description(template_code: str) -> str:
+    descriptions = {
+        "requisition_submit_notice": "Notify approvers after a purchase requisition is submitted",
+        "purchase_order_approved_notice": "Notify applicants after a purchase order is approved",
+    }
+    return descriptions.get(template_code, "")
+
+
+def _mock_template_detail_by_id(template_id: str) -> JsonDict:
+    for detail in _default_mock_template_snapshots():
+        if _mock_template_id(detail) == template_id:
+            return detail
+    return {}
+
+
+def _mock_template_details_for_scope(payload: JsonDict) -> list[JsonDict]:
+    templates = _default_mock_template_snapshots()
+    query_values = _mock_template_document_values(payload)
+    if not query_values:
+        return templates
+    return [detail for detail in templates if _mock_template_scope_matches(payload, detail, detail.get("messageTempVO") or {})]
+
+
+def _template_list_item_from_detail(detail: JsonDict, payload: JsonDict) -> JsonDict:
+    message_temp = detail.get("messageTempVO") if isinstance(detail.get("messageTempVO"), dict) else {}
+    item = {
+        "id": message_temp.get("id") or _mock_template_id(detail),
+        "templateName": message_temp.get("templateName") or "",
+        "typeName": message_temp.get("typeName") or "业务流程",
+        "templateCode": message_temp.get("templateCode") or "",
+        "enable": message_temp.get("enable", 1),
+        "tenantDefault": message_temp.get("tenantDefault", 0),
+        "templateLevel": message_temp.get("templateLevel", 3),
+        "firstRegion": message_temp.get("firstRegion") or "",
+        "firstRegionName": message_temp.get("firstRegionName") or [],
+        "groupCode": message_temp.get("groupCode") or "businessprocess",
+        "documentId": message_temp.get("documentId") or "",
+        "msgDocumentId": message_temp.get("msgDocumentId") or message_temp.get("documentId") or "",
+        "businessObjectCode": message_temp.get("businessObjectCode") or "",
+        "appCode": payload.get("appCode") or message_temp.get("appCode") or "",
+        "orgId": payload.get("orgId") or message_temp.get("orgId") or "666666",
+        "uri": payload.get("uri") or message_temp.get("uri") or "",
+        "srcType": payload.get("srcType") or message_temp.get("srcType") or "",
+        "metadataId": payload.get("metadataId") or message_temp.get("metadataId") or "",
+        "domain": payload.get("domain") or message_temp.get("domain") or "",
+        "typeId": message_temp.get("typeId") or "type-businessprocess",
+        "typeCode": message_temp.get("typeCode") or "businessprocess",
+    }
+    return {**item, "detail": detail, "currentOrgTemps": [{**item, "detail": detail}]}
 
 
 def _save_mock_template_snapshot(payload: JsonDict, database_url: str) -> JsonDict:

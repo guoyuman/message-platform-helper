@@ -190,6 +190,31 @@ class AgentUnitTests(unittest.TestCase):
         self.assertIn("{{userName}}", translated_uspace["content"])
         self.assertIn("检查目标语种是否存在", result.output["executionTrace"])
 
+    def test_default_mock_templates_support_requisition_language_sync(self) -> None:
+        context = AgentContext(
+            request=AssistantRequest(
+                text="将请购单下的所有模板信息同步到印尼语种下",
+                dry_run=True,
+            ),
+            memory=ConversationMemory(session_id="s-template-default-mock"),
+            retrieved=[],
+            llm=RuleBasedLLMClient(),
+            platform=PlatformGateway(),
+        )
+
+        result = TemplateAgent().run(context)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output["businessObject"]["businessObjectCode"], "requisition_order")
+        self.assertEqual(len(result.output["translatedTemplates"]), 1)
+        translated_contents = result.output["translatedTemplates"][0]["platformPayload"]["messageTemplateContentVOList"]
+        id_contents = [item for item in translated_contents if item["language"] == "id_ID"]
+        self.assertEqual(len(id_contents), 3)
+        self.assertEqual({item["channelType"] for item in id_contents}, {"mail", "sms", "uspace"})
+        self.assertTrue(all(item["id"] == "" and item["status"] == "add" for item in id_contents))
+        self.assertIn("${billNo}", id_contents[0]["title"])
+        self.assertIn("{{approveUser}}", " ".join(str(item.get("content") or "") for item in id_contents))
+
 
 
 if __name__ == "__main__":

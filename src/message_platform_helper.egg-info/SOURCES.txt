@@ -81,6 +81,7 @@ src/message_platform_helper/rag/loader/docx_loader.py
 src/message_platform_helper/rag/loader/markdown_loader.py
 src/message_platform_helper/rag/loader/pdf_loader.py
 src/message_platform_helper/rag/loader/text_loader.py
+src/message_platform_helper/rag/loader/xlsx_loader.py
 src/message_platform_helper/rag/parser/__init__.py
 src/message_platform_helper/rag/parser/base.py
 src/message_platform_helper/rag/parser/docx_parser.py

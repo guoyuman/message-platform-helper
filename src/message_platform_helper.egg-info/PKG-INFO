@@ -10,6 +10,7 @@ Requires-Dist: pgvector>=0.3
 Requires-Dist: psycopg[binary]>=3.2
 Requires-Dist: pymupdf>=1.24
 Requires-Dist: python-docx>=1.1
+Requires-Dist: requests>=2.32
 Requires-Dist: sqlalchemy>=2.0
 Provides-Extra: redis
 Requires-Dist: redis>=5; extra == "redis"
@@ -35,10 +36,14 @@ Requires-Dist: pytest>=8; extra == "test"
 
 ```powershell
 docker compose up -d 
-$env:PYTHONPATH = "src"
+
+copy .env.example .env
+# Edit .env locally, keep real keys out of git.
+
+uvicorn src.message_platform_helper.api.app:create_app --reload --host 127.0.0.1 --port 8790
 python -m unittest discover -s tests
 python -m message_platform_helper.cli demo
-uvicorn src.message_platform_helper.api.app:create_app --reload --host 127.0.0.1 --port 8790
+
 ```
 
 前端单独启动：
