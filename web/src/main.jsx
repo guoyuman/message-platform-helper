@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 
 const DEFAULT_SESSION = "web-demo";
 const WELCOME_MESSAGES = [
-  { role: "assistant", text: "可以直接描述模板翻译、邮箱通道、也可以询问消息平台使用说明和发送失败排查。" },
+  { role: "assistant", text: "可以直接描述模板翻译、邮箱通道配置、也可以询问消息平台使用说明和发送失败排查。" },
 ];
 const GROUP_LABELS = ["今天", "昨天", "7天内", "一个月内", "更早"];
 
@@ -27,14 +27,15 @@ function App() {
   const [decisionLine, setDecisionLine] = useState("等待请求");
   const [health, setHealth] = useState({ llm: "Local", memory: "PostgreSQL", rag: "Ready" });
   const messagesEndRef = useRef(null);
+  const didLoadTenantDataRef = useRef(false);
 
   useEffect(() => {
     loadHealth();
-    loadSessions();
-    loadMemory(sessionId);
   }, []);
 
   useEffect(() => {
+    if (didLoadTenantDataRef.current && !tenantId.trim()) return;
+    didLoadTenantDataRef.current = true;
     loadSessions();
     loadMemory(sessionId);
   }, [tenantId]);
@@ -377,7 +378,7 @@ function App() {
           <div className="panel-title">快速任务</div>
           <div className="quick-grid">
             {[
-              ["给 ops@example.com 配置邮件通道并测试", "邮箱通道"],
+              ["给 ops@example.com 配置邮件通道并测试", "邮箱通道配置"],
               ["同步采购订单下所有模板到阿拉伯语", "模板同步翻译"],
               ["消息发送失败原因如何排查？", "失败排查"],
               ["消息平台如何使用？给我一份操作说明", "使用说明"],

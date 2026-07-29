@@ -81,6 +81,7 @@ class BGEEmbeddingProvider:
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         try:
+            _patch_xlm_roberta_prepare_for_model()
             from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
         except ImportError as exc:
             raise RuntimeError("BGE embedding requires sentence-transformers to be installed.") from exc
@@ -155,3 +156,49 @@ def _fit_dimensions(vector: list[float], dimensions: int) -> list[float]:
     if len(vector) > dimensions:
         return vector[:dimensions]
     return [*vector, *([0.0] * (dimensions - len(vector)))]
+
+
+def _patch_xlm_roberta_prepare_for_model() -> None:
+    try:
+        from transformers import XLMRobertaTokenizer, XLMRobertaTokenizerFast  # type: ignore[import-untyped]
+    except ImportError:
+        return
+    for tokenizer_cls in (XLMRobertaTokenizer, XLMRobertaTokenizerFast):
+        if hasattr(tokenizer_cls, "prepare_for_model"):
+            continue
+
+        def prepare_for_model(
+            self,
+            ids,
+            pair_ids=None,
+            *,
+            add_special_tokens: bool = True,
+            return_token_type_ids: bool | None = None,
+            return_attention_mask: bool | None = None,
+            return_special_tokens_mask: bool = False,
+            return_length: bool = False,
+            **_: Any,
+        ) -> dict[str, Any]:
+            token_ids = list(ids)
+            pair_token_ids = list(pair_ids) if pair_ids is not None else None
+            if add_special_tokens:
+                input_ids = self.build_inputs_with_special_tokens(token_ids, pair_token_ids)
+                token_type_ids = self.create_token_type_ids_from_sequences(token_ids, pair_token_ids)
+            else:
+                input_ids = token_ids + (pair_token_ids or [])
+                token_type_ids = [0] * len(input_ids)
+            output: dict[str, Any] = {"input_ids": input_ids}
+            if return_token_type_ids is not False:
+                output["token_type_ids"] = token_type_ids
+            if return_attention_mask:
+                output["attention_mask"] = [1] * len(input_ids)
+            if return_special_tokens_mask:
+                if hasattr(self, "get_special_tokens_mask"):
+                    output["special_tokens_mask"] = self.get_special_tokens_mask(token_ids, pair_token_ids, already_has_special_tokens=False)
+                else:
+                    output["special_tokens_mask"] = [0] * len(input_ids)
+            if return_length:
+                output["length"] = len(input_ids)
+            return output
+
+        tokenizer_cls.prepare_for_model = prepare_for_model
