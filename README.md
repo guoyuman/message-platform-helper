@@ -18,7 +18,7 @@ docker compose up -d
 copy .env.example .env
 # Edit .env locally, keep real keys out of git.
 
-uvicorn src.message_platform_helper.api.app:create_app --reload --host 127.0.0.1 --port 8790
+uvicorn message_platform_helper.api.app:create_app --factory --reload --host 127.0.0.1 --port 8790
 python -m unittest discover -s tests
 python -m message_platform_helper.cli demo
 
