@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
+from threading import Lock
 
 from .business_object_resolver import BusinessObjectResolver
 from ..models import AgentResult, AgentStep, JsonDict, Tool
@@ -13,6 +15,8 @@ from ..react import AgentContext, ReActAgent
 
 
 DEFAULT_SOURCE_LANGUAGE = "en_US"
+DEFAULT_TEMPLATE_SYNC_BATCH_SIZE = 20
+DEFAULT_TEMPLATE_SYNC_MAX_CONCURRENCY = 4
 
 LANGUAGE_ALIASES = {
     "en": "en_US",
@@ -292,6 +296,7 @@ class TemplateAgent(ReActAgent):
                 "executionTrace": list(context.scratch.get("templateExecutionTrace") or []),
             }
         scope = _scope_payload(payload)
+        batch_size, max_concurrency = _sync_limits(payload)
         issues: List[JsonDict] = []
         translated_templates: List[JsonDict] = []
         skipped_templates: List[JsonDict] = []
@@ -311,62 +316,30 @@ class TemplateAgent(ReActAgent):
                 extra={"scope": scope, "templateListResponse": list_response or {}},
             )
 
-        for template_ref in templates:
-            detail = _resolve_template_detail(context, template_ref, payload, scope)
-            template_id = _template_id(detail) or _template_id(template_ref)
-            template_code = _template_code(detail) or _template_code(template_ref)
-            template_name = _template_name(detail) or _template_name(template_ref)
-            if not detail:
-                failed = {"templateId": template_id, "templateCode": template_code, "templateName": template_name, "reason": "detail missing"}
-                failed_templates.append(failed)
-                issues.append(
-                    {
-                        "code": "template.detail.required",
-                        "message": f"Template {template_code or template_id or template_name or '<unknown>'} detail is required.",
-                        "severity": "error",
+        for batch in _chunked(templates, batch_size):
+            if len(batch) == 1 or max_concurrency <= 1:
+                batch_results = [_sync_template_entry(context, batch[0], payload, scope)]
+            else:
+                with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+                    futures = {
+                        executor.submit(_sync_template_entry, context, template_ref, payload, scope): index
+                        for index, template_ref in enumerate(batch)
                     }
-                )
-                continue
+                    batch_results = []
+                    for future in as_completed(futures):
+                        batch_results.append((futures[future], future.result()))
+                batch_results.sort(key=lambda item: item[0])
+                batch_results = [item[1] for item in batch_results]
 
-            translated = _translate_detail(context, detail, payload)
-            issues.extend(translated.get("issues") or [])
-            if translated.get("status") == "skipped":
-                skipped_templates.append(
-                    {
-                        "templateId": template_id,
-                        "templateCode": template_code,
-                        "templateName": template_name,
-                        "targetLanguage": payload["targetLanguage"],
-                        "reason": "already exists",
-                    }
-                )
-                continue
-            if not translated.get("ok", True):
-                failed_templates.append(
-                    {
-                        "templateId": template_id,
-                        "templateCode": template_code,
-                        "templateName": template_name,
-                        "reason": translated.get("summary") or "translation failed",
-                    }
-                )
-                continue
-
-            _trace(context, "\u4fdd\u5b58\u76ee\u6807\u8bed\u79cd\u6a21\u677f")
-            save_response = context.platform.save_template(translated["platformPayload"], dry_run=context.request.dry_run)
-            translated_templates.append(
-                {
-                    "templateId": template_id,
-                    "templateCode": template_code,
-                    "templateName": template_name,
-                    "sourceLanguage": translated["sourceLanguage"],
-                    "targetLanguage": translated["targetLanguage"],
-                    "translatedContentCount": len(translated.get("translatedContents") or []),
-                    "savePreview": translated.get("savePreview") or [],
-                    "platformPayload": translated["platformPayload"],
-                    "saveResponse": save_response,
-                }
-            )
+            for result in batch_results:
+                issues.extend(result.get("issues") or [])
+                kind = result.get("kind")
+                if kind == "translated":
+                    translated_templates.append(result["translated"])
+                elif kind == "skipped":
+                    skipped_templates.append(result["skipped"])
+                elif kind == "failed":
+                    failed_templates.append(result["failed"])
 
         has_errors = any(issue.get("severity") == "error" for issue in issues)
         return {
@@ -864,9 +837,125 @@ def _business_object_resolution(context: AgentContext, payload: JsonDict) -> Jso
 
 
 def _trace(context: AgentContext, message: str) -> None:
-    trace = context.scratch.setdefault("templateExecutionTrace", [])
-    if message and message not in trace:
-        trace.append(message)
+    lock = context.scratch.setdefault("_templateTraceLock", Lock())
+    with lock:
+        trace = context.scratch.setdefault("templateExecutionTrace", [])
+        if message and message not in trace:
+            trace.append(message)
+
+
+def _sync_limits(payload: JsonDict) -> tuple[int, int]:
+    batch_size = _coerce_positive_int(
+        payload.get("batchSize")
+        or payload.get("batch_size")
+        or payload.get("templateBatchSize")
+        or DEFAULT_TEMPLATE_SYNC_BATCH_SIZE,
+        DEFAULT_TEMPLATE_SYNC_BATCH_SIZE,
+    )
+    max_concurrency = _coerce_positive_int(
+        payload.get("maxConcurrency")
+        or payload.get("max_concurrency")
+        or payload.get("parallelism")
+        or DEFAULT_TEMPLATE_SYNC_MAX_CONCURRENCY,
+        DEFAULT_TEMPLATE_SYNC_MAX_CONCURRENCY,
+    )
+    return batch_size, min(max_concurrency, batch_size)
+
+
+def _coerce_positive_int(value: object, default: int) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+    return result if result > 0 else default
+
+
+def _chunked(items: List[JsonDict], size: int) -> List[List[JsonDict]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _sync_template_entry(context: AgentContext, template_ref: JsonDict | str, payload: JsonDict, scope: JsonDict) -> JsonDict:
+    try:
+        detail = _resolve_template_detail(context, template_ref, payload, scope)
+        template_id = _template_id(detail) or _template_id(template_ref)
+        template_code = _template_code(detail) or _template_code(template_ref)
+        template_name = _template_name(detail) or _template_name(template_ref)
+        if not detail:
+            return {
+                "kind": "failed",
+                "failed": {"templateId": template_id, "templateCode": template_code, "templateName": template_name, "reason": "detail missing"},
+                "issues": [
+                    {
+                        "code": "template.detail.required",
+                        "message": f"Template {template_code or template_id or template_name or '<unknown>'} detail is required.",
+                        "severity": "error",
+                    }
+                ],
+            }
+
+        translated = _translate_detail(context, detail, payload)
+        issues = list(translated.get("issues") or [])
+        if translated.get("status") == "skipped":
+            return {
+                "kind": "skipped",
+                "skipped": {
+                    "templateId": template_id,
+                    "templateCode": template_code,
+                    "templateName": template_name,
+                    "targetLanguage": payload["targetLanguage"],
+                    "reason": "already exists",
+                },
+                "issues": issues,
+            }
+        if not translated.get("ok", True):
+            return {
+                "kind": "failed",
+                "failed": {
+                    "templateId": template_id,
+                    "templateCode": template_code,
+                    "templateName": template_name,
+                    "reason": translated.get("summary") or "translation failed",
+                },
+                "issues": issues,
+            }
+
+        _trace(context, "\u4fdd\u5b58\u76ee\u6807\u8bed\u79cd\u6a21\u677f")
+        save_response = context.platform.save_template(translated["platformPayload"], dry_run=context.request.dry_run)
+        return {
+            "kind": "translated",
+            "translated": {
+                "templateId": template_id,
+                "templateCode": template_code,
+                "templateName": template_name,
+                "sourceLanguage": translated["sourceLanguage"],
+                "targetLanguage": translated["targetLanguage"],
+                "translatedContentCount": len(translated.get("translatedContents") or []),
+                "savePreview": translated.get("savePreview") or [],
+                "platformPayload": translated["platformPayload"],
+                "saveResponse": save_response,
+            },
+            "issues": issues,
+        }
+    except Exception as exc:  # pragma: no cover - defensive guard for concurrent sync
+        template_id = _template_id(template_ref)
+        template_code = _template_code(template_ref)
+        template_name = _template_name(template_ref)
+        return {
+            "kind": "failed",
+            "failed": {
+                "templateId": template_id,
+                "templateCode": template_code,
+                "templateName": template_name,
+                "reason": str(exc),
+            },
+            "issues": [
+                {
+                    "code": "template.sync.failed",
+                    "message": str(exc),
+                    "severity": "error",
+                }
+            ],
+        }
 
 
 def _detect_business_object(text: str) -> str:

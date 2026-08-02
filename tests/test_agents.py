@@ -80,6 +80,7 @@ class TemplateSyncPlatform(PlatformGateway):
         super().__init__()
         self.find_payloads: list[dict] = []
         self.saved_payloads: list[dict] = []
+        self.detail_calls: list[str] = []
 
     def get_domain_tree(self, payload: dict | None = None, dry_run: bool = True) -> dict:
         return {
@@ -100,6 +101,17 @@ class TemplateSyncPlatform(PlatformGateway):
     def save_template(self, payload: dict, dry_run: bool = True) -> dict:
         self.saved_payloads.append(payload)
         return {"ok": True, "status": "saved", "payload": payload}
+
+    def get_template_detail(self, template_id: str, scope: dict | None = None, dry_run: bool = True) -> dict:
+        self.detail_calls.append(template_id)
+        if template_id == "tpl-001":
+            return {"ok": True, "data": sample_multichannel_template_detail()}
+        if template_id == "tpl-002":
+            detail = sample_multichannel_template_detail()
+            detail["messageTempVO"]["id"] = "tpl-002"
+            detail["messageTempVO"]["templateCode"] = "tpl-002-code"
+            return {"ok": True, "data": detail}
+        return {"ok": True, "data": sample_multichannel_template_detail()}
 
 
 class AgentUnitTests(unittest.TestCase):
@@ -214,6 +226,31 @@ class AgentUnitTests(unittest.TestCase):
         self.assertTrue(all(item["id"] == "" and item["status"] == "add" for item in id_contents))
         self.assertIn("${billNo}", id_contents[0]["title"])
         self.assertIn("{{approveUser}}", " ".join(str(item.get("content") or "") for item in id_contents))
+
+    def test_template_sync_batches_multiple_templates(self) -> None:
+        platform = TemplateSyncPlatform()
+        detail = sample_multichannel_template_detail()
+        detail["messageTempVO"]["id"] = "tpl-001"
+        second = sample_multichannel_template_detail()
+        second["messageTempVO"]["id"] = "tpl-002"
+        second["messageTempVO"]["templateCode"] = "tpl-002-code"
+        context = AgentContext(
+            request=AssistantRequest(
+                text="同步采购订单下所有模板到阿拉伯语",
+                payload={"template": {"templates": [{"id": "tpl-001"}, {"id": "tpl-002"}], "sourceLanguage": "zh_CN", "targetLanguage": "ar_SA", "batchSize": 1, "maxConcurrency": 2}},
+                dry_run=True,
+            ),
+            memory=ConversationMemory(session_id="s-template-batch"),
+            retrieved=[],
+            llm=RuleBasedLLMClient(),
+            platform=platform,
+        )
+
+        result = TemplateAgent().run(context)
+
+        self.assertTrue(result.ok)
+        self.assertEqual([item["templateId"] for item in result.output["translatedTemplates"]], ["tpl-001", "tpl-002"])
+        self.assertEqual(platform.detail_calls, ["tpl-001", "tpl-002"])
 
 
 
