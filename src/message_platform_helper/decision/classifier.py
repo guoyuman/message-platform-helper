@@ -18,10 +18,11 @@ class IntentClassifier(Protocol):
 @dataclass
 class LLMIntentClassifier:
     llm: LLMClient
+    system_prompt: str = ""
 
     def classify(self, request: AssistantRequest, memory: ConversationMemory) -> IntentResult:
         raw = self.llm.complete_json(
-            "Classify user intent and request taxonomy for the message platform helper. Return request_type, domain, operation, and legacy intent.",
+            self.system_prompt or _default_intent_prompt(),
             {
                 "text": request.text,
                 "payload": request.payload,
@@ -81,6 +82,20 @@ class LLMIntentClassifier:
             labels=list(raw.get("labels") or []),
             metadata=metadata,
         )
+
+
+def _default_intent_prompt() -> str:
+    return (
+        "Classify user intent and request taxonomy for the message platform helper. "
+        "If the user message contains multiple independent tasks, split them before choosing agents. "
+        "Return strict JSON with request_type, domain, operation, intent, confidence, rationale, "
+        "selectedAgents, selectedTools, workflow, searchQuery, missingSlots, and taskSlices. "
+        "taskSlices must be an array; each item has text, request_type, domain, operation, intent, "
+        "workflow, selectedAgents, selectedTools, searchQuery, needRag, and payloadDomain. "
+        "Use one taskSlice for knowledge-base questions, one for template translation/sync, "
+        "and one for channel configuration when they appear in the same user input. "
+        "Do not merge query slices with action slices. Do not invent payload values."
+    )
 
 
 __all__ = ["IntentClassifier", "LLMIntentClassifier"]

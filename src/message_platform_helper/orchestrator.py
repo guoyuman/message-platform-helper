@@ -26,6 +26,16 @@ from .workflow import WorkflowExecutor, WorkflowRegistry, build_default_workflow
 
 
 @dataclass
+class TaskSlice:
+    agent: str
+    workflow: str
+    text: str
+    payload: JsonDict
+    need_retrieval: bool = False
+    search_query: str = ""
+
+
+@dataclass
 class MessagePlatformHelper:
     settings: Settings
     llm: LLMClient
@@ -68,6 +78,7 @@ class MessagePlatformHelper:
                 workflow_registry=self.workflow_registry,
                 knowledge_policy=knowledge_policy,
                 workflow_router=workflow_router,
+                intent_prompt=_intent_prompt_from_config(self.config_catalog),
             )
 
     @classmethod
@@ -115,8 +126,11 @@ class MessagePlatformHelper:
         decision_result = self.decision_engine.decide(request, memory)
         metrics.model_time_ms += elapsed_ms(started)
         decision = to_reasoning_decision(decision_result)
+        task_slices = _task_slices_for_request(request, decision)
+        if task_slices:
+            _apply_task_slices_to_decision(decision, task_slices)
         retrieved: List[KnowledgeChunk] = []
-        if decision.need_retrieval or "knowledge" in decision.selected_agents:
+        if not task_slices and (decision.need_retrieval or "knowledge" in decision.selected_agents):
             if self.rag_service is None:
                 raise RuntimeError("RAG service is not configured.")
             started = time.perf_counter()
@@ -135,9 +149,12 @@ class MessagePlatformHelper:
         )
         if self.workflow_executor is None:
             raise RuntimeError("Workflow executor is not configured.")
-        started = time.perf_counter()
-        results = self.workflow_executor.execute(decision.workflow, decision.selected_agents, context)
-        metrics.tool_time_ms += elapsed_ms(started)
+        if task_slices:
+            results, retrieved = self._execute_task_slices(task_slices, context, tenant_context, metrics)
+        else:
+            started = time.perf_counter()
+            results = self.workflow_executor.execute(decision.workflow, decision.selected_agents, context)
+            metrics.tool_time_ms += elapsed_ms(started)
         if not results and decision.request_type == "chat":
             memory = self._hydrate_memory_from_runs(memory)
             started = time.perf_counter()
@@ -191,6 +208,51 @@ class MessagePlatformHelper:
             },
         )
         return response
+
+    def _execute_task_slices(
+        self,
+        task_slices: List[TaskSlice],
+        base_context: AgentContext,
+        tenant_context: TenantContext,
+        metrics: RequestMetrics,
+    ) -> tuple[List[AgentResult], List[KnowledgeChunk]]:
+        results: List[AgentResult] = []
+        retrieved: List[KnowledgeChunk] = []
+        for task in task_slices:
+            task_retrieved: List[KnowledgeChunk] = []
+            if task.need_retrieval or task.agent == "knowledge":
+                if self.rag_service is None:
+                    raise RuntimeError("RAG service is not configured.")
+                started = time.perf_counter()
+                task_retrieved = self.rag_service.retrieve(task.search_query or task.text, limit=5, tenant_context=tenant_context)
+                metrics.rag_time_ms += elapsed_ms(started)
+                retrieved.extend(task_retrieved)
+            task_request = AssistantRequest(
+                text=task.text,
+                session_id=base_context.request.session_id,
+                user_id=base_context.request.user_id,
+                tenant_id=base_context.request.tenant_id,
+                locale=base_context.request.locale,
+                payload=task.payload,
+                dry_run=base_context.request.dry_run,
+                request_id=base_context.request.request_id,
+                trace_id=base_context.request.trace_id,
+            )
+            task_context = AgentContext(
+                request=task_request,
+                memory=base_context.memory,
+                retrieved=task_retrieved,
+                llm=base_context.llm,
+                platform=base_context.platform,
+                tool_registry=base_context.tool_registry,
+                rag_service=base_context.rag_service,
+                tenant_context=base_context.tenant_context,
+                scratch={},
+            )
+            started = time.perf_counter()
+            results.extend(self.workflow_executor.execute(task.workflow, [task.agent], task_context))
+            metrics.tool_time_ms += elapsed_ms(started)
+        return results, retrieved
 
     def load_memory_for_display(self, session_id: str, tenant_id: str = ""):
         storage_session_id = _tenant_scoped_session_id(tenant_id, session_id)
@@ -381,8 +443,10 @@ def _build_rag_service(knowledge_base: object) -> object:
 def _chat_system_prompt(memory) -> str:
     return (
         "Answer the user's chat message using the provided conversation memory. "
-        "If the user asks what happened before, use memory.summary, memory.facts, and memory.recent_messages. "
-        "Do not claim you lack memory when relevant memory is provided. "
+        "你是企业消息平台助手。请用用户当前语言直接回答。"
+        "如果用户询问之前发生过什么，只能依据 memory.summary、memory.facts 和 memory.recent_messages。"
+        "当相关记忆已提供时，不要声称没有记忆；当信息不足时说明缺口。"
+        "不要编造未提供的历史、配置、邮箱、模板或执行结果。"
         f"memory={_memory_prompt_view(memory)}"
     )
 
@@ -398,6 +462,98 @@ def _memory_prompt_view(memory) -> JsonDict:
         "facts": facts,
         "recent_messages": list(payload.get("recent_messages") or payload.get("recentMessages") or [])[-12:],
     }
+
+
+def _task_slices_for_request(request: AssistantRequest, decision) -> List[TaskSlice]:
+    payload = dict(request.payload or {})
+    raw_slices = (decision.metadata or {}).get("taskSlices") or (decision.metadata or {}).get("task_slices") or []
+    if not isinstance(raw_slices, list) or len(raw_slices) <= 1:
+        return []
+    tasks: List[TaskSlice] = []
+    for raw in raw_slices:
+        if not isinstance(raw, dict):
+            continue
+        agent = _task_agent(raw)
+        if agent not in {"knowledge", "template", "channel_config"}:
+            continue
+        text = str(raw.get("text") or request.text or "")
+        workflow = str(raw.get("workflow") or _default_workflow_for_agent(agent))
+        search_query = str(raw.get("searchQuery") or raw.get("search_query") or text)
+        tasks.append(
+            TaskSlice(
+                agent=agent,
+                workflow=workflow,
+                text=text,
+                payload=_payload_for_task(payload, raw, agent),
+                need_retrieval=bool(raw.get("needRag") if "needRag" in raw else raw.get("need_rag", agent == "knowledge")),
+                search_query=search_query,
+            )
+        )
+    return tasks if len(tasks) > 1 else []
+
+
+def _apply_task_slices_to_decision(decision, task_slices: List[TaskSlice]) -> None:
+    selected_agents = [task.agent for task in task_slices]
+    decision.selected_agents = selected_agents
+    decision.need_retrieval = any(task.need_retrieval for task in task_slices)
+    decision.workflow = "message_platform_workflow"
+    decision.request_type = "action" if any(task.agent != "knowledge" for task in task_slices) else "query"
+    decision.domain = "implementation"
+    decision.operation = "execute"
+    decision.intent = "workflow"
+    decision.search_query = next((task.search_query for task in task_slices if task.search_query), decision.search_query)
+    metadata = dict(decision.metadata or {})
+    metadata["taskSlices"] = [
+        {
+            "agent": task.agent,
+            "workflow": task.workflow,
+            "text": task.text,
+            "needRetrieval": task.need_retrieval,
+            "searchQuery": task.search_query,
+        }
+        for task in task_slices
+    ]
+    metadata["multiAgentSplit"] = True
+    decision.metadata = metadata
+
+
+def _task_agent(raw: JsonDict) -> str:
+    selected = raw.get("selectedAgents") or raw.get("selected_agents") or []
+    if isinstance(selected, list) and selected:
+        return str(selected[0])
+    domain = str(raw.get("payloadDomain") or raw.get("payload_domain") or raw.get("domain") or "")
+    if domain == "knowledge":
+        return "knowledge"
+    if domain == "template":
+        return "template"
+    if domain == "channel":
+        return "channel_config"
+    return ""
+
+
+def _default_workflow_for_agent(agent: str) -> str:
+    return {
+        "knowledge": "knowledge_answer",
+        "template": "template_workflow",
+        "channel_config": "implementation_workflow",
+    }.get(agent, "")
+
+
+def _payload_for_task(payload: JsonDict, raw: JsonDict, agent: str) -> JsonDict:
+    payload_domain = str(raw.get("payloadDomain") or raw.get("payload_domain") or "")
+    if agent == "template":
+        scoped = dict(payload.get("template") or {})
+        for key in ("template", "templates", "scope", "targetLanguage", "sourceLanguage", "businessObject", "documentId", "groupCode"):
+            if key in payload and key not in scoped:
+                scoped[key] = payload[key]
+        return {"template": scoped} if scoped or payload_domain == "template" else payload
+    if agent == "channel_config":
+        scoped = dict(payload.get("channel") or {})
+        for key in ("email", "configName", "mailHost", "mailPort", "mailUsername", "username", "mailPwd", "password", "verifyUser", "receiver", "test"):
+            if key in payload and key not in scoped:
+                scoped[key] = payload[key]
+        return {"channel": scoped} if scoped or payload_domain == "channel" else payload
+    return payload
 
 
 def _tenant_scoped_session_id(tenant_id: str, session_id: str) -> str:
@@ -588,3 +744,7 @@ def _knowledge_policy_from_config(config: ConfigCatalog | None) -> KnowledgePoli
 def _workflow_router_from_config(config: ConfigCatalog | None) -> WorkflowRouter | None:
     routes = (config.policies.get("intent_workflows") if config else None) or {}
     return WorkflowRouter(intent_workflows={str(key): str(value) for key, value in routes.items()}) if routes else None
+
+
+def _intent_prompt_from_config(config: ConfigCatalog | None) -> str:
+    return str((config.prompts.get("intent_classifier") if config else "") or "")

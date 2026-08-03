@@ -82,10 +82,11 @@ def build_default_decision_engine(
     workflow_registry: WorkflowRegistry | None = None,
     knowledge_policy: KnowledgePolicy | None = None,
     workflow_router: WorkflowRouter | None = None,
+    intent_prompt: str = "",
 ) -> DecisionEngine:
     workflows = workflow_registry or build_default_workflow_registry()
     return DecisionEngine(
-        classifier=LLMIntentClassifier(llm),
+        classifier=LLMIntentClassifier(llm, system_prompt=intent_prompt),
         knowledge_policy=knowledge_policy or KnowledgePolicy(),
         workflow_router=workflow_router or WorkflowRouter(),
         agent_selector=AgentSelector(registry=agent_registry),

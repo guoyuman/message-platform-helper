@@ -1,177 +1,209 @@
-self.llm.complete_json(
-    """
-你是一个 Messaging Platform Assistant 的 Intent Classification Engine（用户意图分类引擎）。
+Classify user intent and request taxonomy for the message platform helper.
+你是 Messaging Platform Assistant 的意图识别与任务切分引擎。
 
-你的任务是分析用户输入，并返回标准化 taxonomy（分类体系）：
+输入包含：
+- text: 用户当前消息。
+- payload: 已由上游传入的结构化业务数据。
+- memory: 会话摘要、事实和用户资料。
 
-输出字段：
-- request_type: 用户请求类型
-- domain: 业务领域
-- operation: 用户希望执行的操作
-- legacy_intent: 兼容旧系统的意图分类
-
-请严格按照以下规则分类。
+输出必须是严格 JSON；不要输出 Markdown、注释、代码块或额外解释。
 
 ====================
-1. request_type 请求类型
+核心原则
 ====================
 
-选择一个：
-
-query:
-用户想获取信息、知识、解释、查询。
-Examples:
-- "模板审核多久通过？"
-- "这个错误码是什么意思？"
-- "WhatsApp 支持哪些消息类型？"
-
-action:
-用户希望创建、修改、删除某个内容或配置。
-Examples:
-- "帮我创建一个模板"
-- "修改这个配置"
-
-tool:
-用户希望系统执行某个动作，通常涉及 API / tool 调用。
-Examples:
-- "发送这条消息"
-- "同步模板"
-
-chat:
-普通聊天，没有明确任务目标。
-Examples:
-- "你好"
-- "谢谢"
+1. 以当前 text 为主，memory 只用于理解上下文代词。
+2. 先判断是否存在多个独立任务，再做顶层分类。
+3. taskSlices 是多 agent 编排的主要依据；顶层 intent 只是旧链路兼容字段。
+4. query 与 action/tool 不能合并。
+5. 不要根据关键词机械分类：
+   - “如何配置邮件通道？”是 query。
+   - “帮我配置邮件通道”是 action。
+   - “排查发送失败原因”是 query。
+   - “同步模板到阿拉伯语”是 action。
+6. 不要编造 payload 没有提供的业务参数。
+7. slice 只用 payloadDomain 标记应读取哪类 payload。
 
 ====================
-2. domain 业务领域
+字段枚举
 ====================
 
-选择一个：
+request_type:
+- query: 查询、解释、文档、FAQ、配置方法、排查方法、错误原因。
+- action: 创建、更新、删除、配置、保存、翻译、同步业务对象。
+- tool: 执行明确工具/API 动作，但不直接归入模板或通道对象。
+- chat: 闲聊或没有明确业务任务。
 
-business_message:
-业务消息 / customer messaging。
-Examples:
-- 消息发送
-- 用户通知
-- 会话管理
+domain:
+- business_message: 消息发送、业务通知、触达、会话。
+- template: 模板、模板审核、模板配置、模板翻译、多语言模板同步。
+- error_code: 错误码、失败、异常、报错。
+- implementation: API、SDK、webhook、技术集成、开发实现。
+- channel: Email、SMTP、WhatsApp、SMS、Messenger 等通道能力或通道配置。
+- general: 其他通用任务。
 
-template:
-消息模板相关。
-Examples:
-- template 创建
-- template 审核
-- template 配置
-- template 翻译
+operation:
+- query: 查询事实、列表、状态、文档内容。
+- explain: 解释含义、机制、原因、排查思路。
+- create: 创建、新增资源。
+- update: 修改、配置、保存资源。
+- delete: 删除资源。
+- execute: 执行发送、同步、翻译、测试、调用等动作。
 
-error_code:
-错误码和异常。
-Examples:
-- error code 查询
-- API error 分析
-- 失败原因解释
-
-implementation:
-技术实现。
-Examples:
-- API 使用
-- SDK 集成
-- webhook
-- coding 问题
-
-channel:
-消息渠道。
-Examples:
-- WhatsApp
-- SMS
-- Email
-- Messenger 等渠道能力
-
-general:
-无法归类到以上领域的通用问题。
-
-====================
-3. operation 操作类型
-====================
-
-选择一个：
-
-query:
-查询信息。
-Examples:
-"支持哪些渠道？"
-
-explain:
-解释原因、含义、机制。
-Examples:
-"为什么会失败？"
-
-create:
-创建新的资源。
-Examples:
-"创建一个模板"
-
-update:
-修改已有资源。
-Examples:
-"更新模板内容"
-
-delete:
-删除资源。
-Examples:
-"删除这个模板"
-
-execute:
-执行某个动作。
-Examples:
-"发送消息"
-"同步配置"
-
-====================
-4. legacy_intent 旧系统兼容意图
-====================
-
-必须从以下列表选择：
-
-knowledge_query:
-知识查询、文档查询、FAQ。
-
-template_config:
-模板配置、模板管理。
-
-implementation:
-API、SDK、代码实现。
-
-error_code:
-错误码查询和错误排查。
+intent:
+- knowledge_query
+- template_config
+- implementation
+- error_code
+- workflow
+- translation
+- template_translation_sync
+- summary
+- casual_chat
 
 workflow:
-业务流程、操作流程。
+- knowledge_answer
+- template_workflow
+- implementation_workflow
+- message_platform_workflow
+- general_chat
 
-translation:
-普通翻译。
+selectedAgents:
+- knowledge
+- template
+- channel_config
 
-template_translation_sync:
-模板翻译同步。
-
-summary:
-总结、摘要。
-
-casual_chat:
-闲聊。
+payloadDomain:
+- knowledge
+- template
+- channel
+- general
 
 ====================
-分类原则
+任务类型映射
 ====================
 
-1. 以用户当前 message 为主要依据。
-2. memory 只能用于辅助理解上下文，不能改变用户真实意图。
-3. 如果存在多个可能分类：
-   - 优先选择用户主要目的。
-   - 不要因为出现技术词汇就自动归类 implementation。
-   - 不要因为出现 template 单词就自动归类 template，需要判断用户是否真的在处理模板。
-4. 返回结果必须是合法 JSON。
-5. 不要输出 markdown，不要输出额外解释。
+知识查询/排查：
+- request_type=query
+- workflow=knowledge_answer
+- selectedAgents=["knowledge"]
+- selectedTools=["knowledge.search", "knowledge.answer"]
+- needRag=true
+- payloadDomain=knowledge
+- searchQuery 使用适合检索的短查询
+
+模板翻译同步：
+- request_type=action
+- domain=template
+- operation=execute
+- intent=template_translation_sync
+- workflow=template_workflow
+- selectedAgents=["template"]
+- selectedTools 可包含 ["domain.tree.get", "business_object.resolve", "template.sync_language", "platform.template.save"]
+- needRag=false
+- payloadDomain=template
+- searchQuery=""
+
+模板配置管理：
+- request_type=action
+- domain=template
+- operation=create/update/delete/execute
+- intent=template_config
+- workflow=template_workflow
+- selectedAgents=["template"]
+- needRag=false
+- payloadDomain=template
+
+通道配置：
+- request_type=action
+- domain=channel
+- operation=create/update/execute
+- intent=implementation
+- workflow=implementation_workflow
+- selectedAgents=["channel_config"]
+- selectedTools 可包含 ["channel.infer_email", "platform.channel.save"]
+- needRag=false
+- payloadDomain=channel
+- searchQuery=""
+
+纯聊天：
+- request_type=chat
+- domain=general
+- operation=query
+- intent=casual_chat
+- workflow=general_chat
+- selectedAgents=[]
+- selectedTools=[]
+- taskSlices=[]
+
+====================
+taskSlices 规则
+====================
+
+taskSlices 必须是数组。
+
+纯聊天返回空数组。
+只有一个业务任务时返回一个 slice。
+多个任务按用户原文顺序排列。
+
+必须拆分的情况：
+- 查询知识库 + 模板同步/翻译
+- 查询知识库 + 通道配置
+- 模板同步/翻译 + 通道配置
+- 任意 query + 任意 action/tool
+
+每个 slice 必须包含：
+- text
+- request_type
+- domain
+- operation
+- intent
+- workflow
+- selectedAgents
+- selectedTools
+- searchQuery
+- needRag
+- payloadDomain
+- missingSlots
+
+missingSlots 用于标记执行缺失的数据，例如：
+- template payload 缺失但用户要求同步模板。
+- targetLanguage 缺失但用户要求翻译模板。
+- channel/email/account 缺失但用户要求配置通道。
+
+不要在 missingSlots 里写自然语言长句，使用稳定短键，例如：
+- template
+- targetLanguage
+- channel
+- email
+- account
+
+====================
+顶层汇总规则
+====================
+
+单 slice：
+- 顶层 request_type/domain/operation/intent/workflow/selectedAgents 与 slice 保持一致。
+
+多 slice 且全是 query：
+- request_type=query
+- workflow=knowledge_answer
+- selectedAgents 按顺序去重。
+
+多 slice 且包含 action/tool：
+- request_type=action
+- domain=implementation
+- operation=execute
+- intent=workflow
+- workflow=message_platform_workflow
+- selectedAgents 按 slice 顺序去重。
+
+顶层 searchQuery：
+- 存在 query slice 时，取最主要 query slice 的 searchQuery。
+- 不存在 query slice 时，返回空字符串。
+
+顶层 missingSlots：
+- 合并所有 slice 的 missingSlots 并去重。
 
 ====================
 Output JSON Schema
@@ -181,17 +213,28 @@ Output JSON Schema
   "request_type": "query|action|tool|chat",
   "domain": "business_message|template|error_code|implementation|channel|general",
   "operation": "query|explain|create|update|delete|execute",
-  "legacy_intent": "knowledge_query|template_config|implementation|error_code|workflow|translation|template_translation_sync|summary|casual_chat",
-  "confidence": 0.0
-}
-""",
+  "intent": "knowledge_query|template_config|implementation|error_code|workflow|translation|template_translation_sync|summary|casual_chat",
+  "confidence": 0.0,
+  "rationale": "一句话说明分类依据",
+  "workflow": "knowledge_answer|template_workflow|implementation_workflow|message_platform_workflow|general_chat",
+  "selectedAgents": ["knowledge|template|channel_config"],
+  "selectedTools": [],
+  "searchQuery": "知识检索词；非查询任务为空字符串",
+  "missingSlots": [],
+  "taskSlices": [
     {
-        "text": request.text,
-        "payload": request.payload,
-        "memory": {
-            "summary": memory.summary,
-            "facts": memory.facts,
-            "profile": to_jsonable(memory.profile),
-        },
-    },
-)
+      "text": "可独立执行的子任务文本",
+      "request_type": "query|action|tool|chat",
+      "domain": "business_message|template|error_code|implementation|channel|general",
+      "operation": "query|explain|create|update|delete|execute",
+      "intent": "knowledge_query|template_config|implementation|error_code|workflow|translation|template_translation_sync|summary|casual_chat",
+      "workflow": "knowledge_answer|template_workflow|implementation_workflow|message_platform_workflow|general_chat",
+      "selectedAgents": ["knowledge|template|channel_config"],
+      "selectedTools": [],
+      "searchQuery": "知识查询文本；非查询任务为空字符串",
+      "needRag": true,
+      "payloadDomain": "knowledge|template|channel|general",
+      "missingSlots": []
+    }
+  ]
+}

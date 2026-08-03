@@ -26,6 +26,27 @@ DOMAIN_AGENTS = {
     "error_code": ["knowledge"],
 }
 
+PROMPT_CACHE = {
+    "template.translate": (
+        "Translate a message template. "
+        "你是企业消息平台的模板本地化引擎。请把输入模板翻译为 targetLanguage，并返回严格 JSON。"
+        "只翻译面向最终用户的人类可读文本；不要翻译字段名、变量名、枚举值、URL、代码、占位符或平台配置。"
+        "必须逐字保留变量占位符，例如 ${x}、{{x}}、#{x}、%s、{0}，数量、顺序和拼写都不能改变。"
+        "必须保留 HTML/XML 标签、属性、表格结构、换行、富文本结构和按钮/链接结构。"
+        "如果某段文本无法可靠翻译，保留原文并在 issues 中说明。"
+        "不要新增、删除或改写模板结构；不要编造源模板中不存在的内容。"
+        "返回字段至少包含 translatedTemplate、targetLanguage、issues。"
+    ),
+    "channel.configure": (
+        "Infer email channel configuration from the user's email/channel hints. "
+        "你是企业消息平台的邮件通道配置抽取器。请根据用户文本和 payload 推断邮件通道配置，并返回严格 JSON。"
+        "只能使用用户或 payload 已提供的信息，以及常见邮箱域名的 SMTP 默认值；不要编造密码、授权码、账号归属或验证结果。"
+        "如果缺少 email、password/mailPwd、sender、verifyUser 等执行必需字段，请写入 missingFields。"
+        "SMTP host、port、TLS/SSL 可由邮箱域名默认规则推断；无法确定时保守返回 missingFields 或 issues。"
+        "返回字段至少包含 email、mailHost、mailPort、username、sender、verifyUser、smtpSSL、smtpTLS、missingFields、issues。"
+    ),
+}
+
 QUERY_PATTERNS = (
     "how to",
     "how do",
@@ -178,7 +199,11 @@ class LLMClient:
         raise NotImplementedError
 
     def answer(self, text: str, system_prompt: str = "") -> JsonDict:
-        system = system_prompt or "Answer the user's chat message."
+        system = system_prompt or (
+            "Answer the user's chat message. "
+            "你是企业消息平台助手。请直接回答用户当前消息；需要引用记忆时只使用提供的 memory，"
+            "不要声称拥有未提供的历史记录。返回 JSON，包含 answer 字段。"
+        )
         return self.complete_json(
             f"{system} Return JSON with an answer field.",
             {"text": text},
@@ -186,19 +211,27 @@ class LLMClient:
 
     def decide(self, text: str, hints: JsonDict) -> JsonDict:
         return self.complete_json(
-            "Decide whether RAG retrieval is needed and which agents should run.",
+            (
+                "Decide whether RAG retrieval is needed and which agents should run. "
+                "请根据 request_type、domain、operation 和 hints 判断是否需要知识库检索，并选择 knowledge、template、channel_config。"
+                "query 通常需要 knowledge/RAG；模板同步和通道配置 action 通常不需要 RAG。返回严格 JSON。"
+            ),
             {"text": text, "hints": hints},
         )
 
     def translate_template(self, template: JsonDict, target_language: str, source_language: str = "") -> JsonDict:
         return self.complete_json(
-            "Translate a message template. Preserve variables exactly.",
+            PROMPT_CACHE["template.translate"],
             {"template": template, "targetLanguage": target_language, "sourceLanguage": source_language},
         )
 
     def summarize(self, text: str, memory: JsonDict) -> JsonDict:
         return self.complete_json(
-            "Update conversation summary and profile facts. Return JSON only.",
+            (
+                "Update conversation summary and profile facts. Return JSON only. "
+                "请只从当前 text 中提取稳定偏好、邮箱、业务域、最近操作等长期有用信息；"
+                "不要记录一次性闲聊或不确定推断。返回 summary、profilePatch、factsPatch。"
+            ),
             {"text": text, "memory": memory},
         )
 
@@ -207,7 +240,8 @@ class LLMClient:
             (
                 "Consolidate enterprise conversation memory. Deduplicate repeated facts, "
                 "resolve contradictions by keeping the latest current fact, remove obsolete low-value memory, "
-                "and keep a concise operationHistory. Return JSON with summary and facts."
+                "and keep a concise operationHistory. "
+                "请保留对后续消息平台任务有用的事实，删除重复、过期和低价值内容。Return JSON with summary and facts."
             ),
             {"memory": memory},
         )
@@ -222,6 +256,31 @@ class RuleBasedLLMClient(LLMClient):
         lowered = text.lower()
         if "Classify user intent" in system:
             decision = self._route(text, payload.get("payload") or {})
+            task_slices = self._task_slices(text, payload.get("payload") or {})
+            if len(task_slices) > 1:
+                selected_agents = _dedupe_strings(
+                    agent
+                    for task in task_slices
+                    for agent in task.get("selectedAgents") or []
+                )
+                selected_tools = _dedupe_strings(
+                    tool
+                    for task in task_slices
+                    for tool in task.get("selectedTools") or []
+                )
+                decision = RoutingContext(
+                    request_type="action" if any(task.get("request_type") != "query" for task in task_slices) else "query",
+                    domain="implementation",
+                    operation="execute",
+                    intent="workflow",
+                    workflow="message_platform_workflow",
+                    selected_agents=selected_agents,
+                    selected_tools=selected_tools,
+                    need_retrieval=any(bool(task.get("needRag")) for task in task_slices),
+                    confidence=decision.confidence,
+                    labels=["multi_task", *selected_agents],
+                    rationale="Offline routing split the request into independent taskSlices before selecting agents.",
+                )
             result = {
                 "intent": decision.intent,
                 "request_type": decision.request_type,
@@ -236,6 +295,7 @@ class RuleBasedLLMClient(LLMClient):
                 "missingSlots": [],
                 "searchQuery": text,
                 "labels": decision.labels,
+                "taskSlices": task_slices,
             }
             result.update(self._template_sync_metadata(text, payload.get("payload") or {}))
             return result
@@ -333,6 +393,62 @@ class RuleBasedLLMClient(LLMClient):
             "is_empty": not text.strip() and not payload,
             "explicit_knowledge": bool(payload.get("../../knowledge")) or self._score(forms, lowered, KNOWLEDGE_PATTERNS) > 0,
         }
+
+    def _task_slices(self, text: str, payload: JsonDict) -> List[JsonDict]:
+        clauses = _split_task_clauses(text)
+        tasks: List[JsonDict] = []
+        if any(_clause_has_knowledge_signal(clause) for clause in clauses) or payload.get("knowledgeQuery") or payload.get("knowledge_query"):
+            task_text = _task_text_for("knowledge", clauses, text)
+            tasks.append(
+                {
+                    "text": task_text,
+                    "request_type": "query",
+                    "domain": "general",
+                    "operation": "explain",
+                    "intent": "knowledge_query",
+                    "workflow": "knowledge_answer",
+                    "selectedAgents": ["knowledge"],
+                    "selectedTools": ["knowledge.search", "knowledge.answer"],
+                    "searchQuery": task_text,
+                    "needRag": True,
+                    "payloadDomain": "knowledge",
+                }
+            )
+        if _has_template_task(text, payload, clauses):
+            task_text = _task_text_for("template", clauses, text)
+            tasks.append(
+                {
+                    "text": task_text,
+                    "request_type": "action",
+                    "domain": "template",
+                    "operation": "execute",
+                    "intent": "template_translation_sync",
+                    "workflow": "template_workflow",
+                    "selectedAgents": ["template"],
+                    "selectedTools": AGENT_TOOLS["template"],
+                    "searchQuery": "",
+                    "needRag": False,
+                    "payloadDomain": "template",
+                }
+            )
+        if _has_channel_task(text, payload, clauses):
+            task_text = _task_text_for("channel_config", clauses, text)
+            tasks.append(
+                {
+                    "text": task_text,
+                    "request_type": "action",
+                    "domain": "channel",
+                    "operation": "create",
+                    "intent": "implementation",
+                    "workflow": "implementation_workflow",
+                    "selectedAgents": ["channel_config"],
+                    "selectedTools": AGENT_TOOLS["channel_config"],
+                    "searchQuery": "",
+                    "needRag": False,
+                    "payloadDomain": "channel",
+                }
+            )
+        return tasks
 
     def _memory_answer(self, system: str) -> str:
         if "operationHistory" not in system:
@@ -598,10 +714,9 @@ class OpenAICompatibleLLMClient(LLMClient):
 
     def complete_json(self, system: str, payload: JsonDict) -> JsonDict:
         if "Translate a message template" in system:
-            system = (
-                system
-                + " Preserve variables (${x}, {{x}}, #{x}) exactly. Preserve HTML tags, attributes, URLs, table structure, line breaks, and rich-text structure exactly; translate only human-readable text."
-            )
+            system = PROMPT_CACHE["template.translate"]
+        elif "Infer email channel configuration" in system:
+            system = PROMPT_CACHE["channel.configure"]
         body = {
             "model": self.model,
             "messages": [
@@ -674,6 +789,103 @@ def _dedupe_operations(history: List[JsonDict]) -> List[JsonDict]:
         seen.add(key)
         result.append(item)
     return list(reversed(result))
+
+
+def _split_task_clauses(text: str) -> List[str]:
+    clauses = [item.strip() for item in re.split(r"[，,。；;、\n]+|(?:\s+and\s+)|(?:\s+then\s+)", text or "", flags=re.IGNORECASE)]
+    return [item for item in clauses if item]
+
+
+def _task_text_for(agent: str, clauses: List[str], fallback: str) -> str:
+    matchers = {
+        "knowledge": _clause_has_knowledge_signal,
+        "template": _clause_has_template_signal,
+        "channel_config": _clause_has_channel_signal,
+    }
+    matcher = matchers[agent]
+    selected = [clause for clause in clauses if matcher(clause)]
+    return "，".join(selected) if selected else fallback
+
+
+def _has_template_task(text: str, payload: JsonDict, clauses: List[str]) -> bool:
+    if any(key in payload for key in ("template", "templates", "templateId", "templateIds")):
+        return True
+    return any(
+        _clause_has_template_signal(clause) and _clause_has_action_signal(clause) and not _clause_has_query_guard(clause)
+        for clause in clauses
+    )
+
+
+def _has_channel_task(text: str, payload: JsonDict, clauses: List[str]) -> bool:
+    if any(key in payload for key in ("channel", "channelConfig", "channel_config", "email")):
+        return not clauses or any(_clause_has_action_signal(clause) and not _clause_has_query_guard(clause) for clause in clauses)
+    return any(
+        _clause_has_channel_signal(clause) and _clause_has_action_signal(clause) and not _clause_has_query_guard(clause)
+        for clause in clauses
+    )
+
+
+def _clause_has_knowledge_signal(clause: str) -> bool:
+    lowered = clause.lower()
+    return any(
+        item in lowered or item in clause
+        for item in (
+            "knowledge",
+            "knowledge base",
+            "how to",
+            "why",
+            "troubleshoot",
+            "failure",
+            "failed",
+            "manual",
+            "doc",
+            "知识库",
+            "查询",
+            "如何",
+            "怎么",
+            "为什么",
+            "排查",
+            "失败",
+            "报错",
+            "说明",
+            "文档",
+        )
+    )
+
+
+def _clause_has_template_signal(clause: str) -> bool:
+    lowered = clause.lower()
+    return any(item in lowered or item in clause for item in ("template", "translate", "sync", "translation", "模板", "翻译", "同步", "语种", "多语"))
+
+
+def _clause_has_channel_signal(clause: str) -> bool:
+    lowered = clause.lower()
+    return any(item in lowered or item in clause for item in ("smtp", "email", "mail", "channel", "邮箱", "邮件", "通道"))
+
+
+def _clause_has_action_signal(clause: str) -> bool:
+    lowered = clause.lower()
+    return any(
+        item in lowered or item in clause
+        for item in ("configure", "config", "setup", "create", "save", "sync", "translate", "test", "配置", "创建", "新增", "保存", "同步", "翻译", "测试")
+    )
+
+
+def _clause_has_query_guard(clause: str) -> bool:
+    lowered = clause.lower()
+    return any(
+        item in lowered or item in clause
+        for item in ("how to", "how do", "what is", "why", "troubleshoot", "manual", "doc", "knowledge", "如何", "怎么", "怎样", "为什么", "排查", "说明", "文档", "知识库", "查询")
+    )
+
+
+def _dedupe_strings(values) -> List[str]:
+    result: List[str] = []
+    for value in values:
+        text = str(value or "")
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _dedupe_fact_lists(facts: JsonDict) -> JsonDict:

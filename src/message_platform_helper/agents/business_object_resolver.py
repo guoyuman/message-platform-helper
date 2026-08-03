@@ -64,11 +64,18 @@ class BusinessObjectResolver:
             return {}
         try:
             raw = self.llm.complete_json(
-                "Resolve a business object by semantic meaning from candidate domain-tree nodes.",
+                (
+                    "Resolve a business object by semantic meaning from candidate domain-tree nodes. "
+                    "你是企业消息平台的业务对象匹配器。只能从 candidates 中选择一个最匹配用户输入 name 的节点；"
+                    "不得编造候选列表之外的 businessObjectName、businessObjectCode 或 documentId。"
+                    "优先匹配中文名称、同义词、业务路径和语义接近度；如果多个候选接近或证据不足，返回 ambiguousCandidates。"
+                    "返回严格 JSON：匹配成功时包含 businessObjectName、businessObjectCode、documentId、confidence；"
+                    "不确定时包含 ambiguousCandidates 和 rationale。"
+                ),
                 {
                     "name": name,
                     "candidates": [_candidate(item) for item in candidates],
-                    "instruction": "Return businessObjectName, businessObjectCode, documentId, confidence, or ambiguousCandidates.",
+                    "instruction": "Only choose from candidates. Return businessObjectName, businessObjectCode, documentId, confidence, or ambiguousCandidates.",
                 },
             )
         except Exception:

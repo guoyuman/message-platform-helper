@@ -108,6 +108,68 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn(answer, stored.recent_messages[-1]["text"])
         self.assertNotEqual(stored.recent_messages[-1]["text"], "knowledge:ok")
 
+    def test_channel_configuration_question_stays_knowledge_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            llm = RuleBasedLLMClient()
+            kb = InMemoryKnowledgeBase()
+            seed_default_knowledge(kb)
+            helper = MessagePlatformHelper(
+                settings=Settings(data_dir=root),
+                llm=llm,
+                memory_manager=MemoryManager(InMemoryMemoryStore({}), llm),
+                knowledge_base=kb,
+                platform=PlatformGateway(),
+                counter_store=MemoryCounterStore({}),
+                rag_service=build_rag_service(KnowledgeBaseRetriever(kb)),
+            )
+            response = helper.handle(AssistantRequest(text="如何配置邮件通道？", session_id="s-channel-query", payload={}, dry_run=True))
+
+        self.assertTrue(response.ok)
+        self.assertEqual([result.agent for result in response.results], ["knowledge"])
+        self.assertFalse(response.decision.metadata.get("multiAgentSplit"))
+
+    def test_mixed_input_splits_knowledge_template_and_channel_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            llm = RuleBasedLLMClient()
+            kb = InMemoryKnowledgeBase()
+            seed_default_knowledge(kb)
+            helper = MessagePlatformHelper(
+                settings=Settings(data_dir=root),
+                llm=llm,
+                memory_manager=MemoryManager(InMemoryMemoryStore({}), llm),
+                knowledge_base=kb,
+                platform=PlatformGateway(),
+                counter_store=MemoryCounterStore({}),
+                rag_service=build_rag_service(KnowledgeBaseRetriever(kb)),
+            )
+            response = helper.handle(
+                AssistantRequest(
+                    text="先查知识库消息发送失败原因如何排查，再给 ops@example.com 配置邮件通道并测试，同时同步采购订单模板到阿拉伯语",
+                    session_id="s-mixed",
+                    payload={
+                        "email": "ops@example.com",
+                        "template": {
+                            "templates": [sample_template_detail()],
+                            "sourceLanguage": "en_US",
+                            "targetLanguage": "ar_SA",
+                            "documentId": "purchase_order",
+                            "groupCode": "businessprocess",
+                        },
+                    },
+                    dry_run=True,
+                )
+            )
+
+        self.assertTrue(response.ok)
+        self.assertEqual([result.agent for result in response.results], ["knowledge", "template", "channel_config"])
+        self.assertTrue(response.decision.metadata.get("multiAgentSplit"))
+        self.assertTrue(response.retrieved)
+        self.assertTrue(response.results[0].output.get("answer"))
+        self.assertTrue(response.results[1].output.get("translatedTemplates"))
+        self.assertEqual(response.results[2].output["emailConfig"]["email"], "ops@example.com")
+
     def test_chat_recall_uses_operation_history_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
