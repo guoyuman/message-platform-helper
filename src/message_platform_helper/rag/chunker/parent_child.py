@@ -8,8 +8,12 @@ from .recursive import RecursiveChunkStrategy
 
 
 class ParentChildChunkStrategy(ChunkStrategy):
-    def __init__(self, child_chunk_size: int = 900, child_chunk_overlap: int = 120) -> None:
-        self._child_strategy = RecursiveChunkStrategy(chunk_size=child_chunk_size, chunk_overlap=child_chunk_overlap)
+    def __init__(self, child_chunk_size: int = 900, child_chunk_overlap: int = 120, *, max_child_chars: int | None = None) -> None:
+        self._child_strategy = RecursiveChunkStrategy(
+            chunk_size=child_chunk_size,
+            chunk_overlap=child_chunk_overlap,
+            max_chunk_chars=max_child_chars,
+        )
 
     def parent(self, document: Document) -> ParentDocument:
         return ParentDocument(

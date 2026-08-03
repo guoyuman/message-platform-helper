@@ -5,8 +5,11 @@ import unittest
 from pathlib import Path
 from zipfile import ZipFile
 
-from message_platform_helper.rag import MarkdownChunkStrategy
+from message_platform_helper.rag import Document, DocumentMetadata, DocumentSection, MarkdownChunkStrategy, ParentChildChunkStrategy
 from message_platform_helper.rag import MarkdownLoader, MarkdownParser
+from message_platform_helper.rag.loader.docx_loader import read_docx_text
+from message_platform_helper.rag.parser.docx_parser import DocxParser
+from message_platform_helper.rag.parser.pdf_parser import PdfParser
 from message_platform_helper.rag import XlsxLoader
 
 from tests.fakes import InMemoryKnowledgeBase
@@ -62,6 +65,17 @@ class RagIngestionPipelineTests(unittest.TestCase):
         self.assertTrue(all(chunk.source.endswith("guide.md") for chunk in chunks))
         self.assertTrue(all(chunk.tags == ["mail"] for chunk in chunks))
 
+    def test_markdown_chunking_uses_paragraph_boundaries_before_size_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "guide.md"
+            path.write_text("# Mail\n\nIntro one.\n\nIntro two.\n\n## Troubleshooting\n\nCheck logs.", encoding="utf-8")
+            kb = InMemoryKnowledgeBase()
+
+            chunks = kb.ingest_file(path, tags=["mail"], strategy=MarkdownChunkStrategy())
+
+        self.assertEqual([chunk.title for chunk in chunks], ["Mail", "Mail", "Troubleshooting"])
+        self.assertEqual([chunk.content for chunk in chunks], ["Intro one.", "Intro two.", "Check logs."])
+
     def test_xlsx_loader_extracts_sheet_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "roles.xlsx"
@@ -89,6 +103,77 @@ class RagIngestionPipelineTests(unittest.TestCase):
         self.assertEqual(document.metadata.format, "xlsx")
         self.assertIn("# 岗位表", document.content)
         self.assertIn("单位 | 岗位", document.content)
+
+    def test_parent_child_chunker_keeps_semantic_table_rows_together(self) -> None:
+        document = Document(
+            id="doc-table",
+            title="岗位表",
+            content="",
+            metadata=DocumentMetadata(format="docx", source="table.docx"),
+        )
+        section = DocumentSection(
+            title="岗位表",
+            level=1,
+            kind="table",
+            content="\n".join(["单位 | 岗位", *[f"单位{i} | 岗位{i}" for i in range(12)]]),
+        )
+
+        chunks = ParentChildChunkStrategy(child_chunk_size=70).chunk(document, [section])
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(chunk.content.startswith("单位 | 岗位") for chunk in chunks))
+        self.assertTrue(all(chunk.metadata["section_kind"] == "table" for chunk in chunks))
+
+    def test_pdf_parser_preserves_page_table_and_image_sections(self) -> None:
+        document = Document(
+            id="pdf",
+            title="Guide",
+            content="[Page 2]\n正文\n\n[Table 2.1]\nA | B\n1 | 2\n\n[Image 2.1: page=2, size=20x30]",
+            metadata=DocumentMetadata(format="pdf", source="guide.pdf"),
+        )
+
+        sections = PdfParser().parse(document)
+
+        self.assertEqual([section.kind for section in sections], ["paragraph", "table", "image"])
+        self.assertEqual(sections[1].metadata["page"], 2)
+        self.assertEqual(sections[2].title, "Guide Page 2 Image 2.1")
+
+    def test_docx_loader_preserves_paragraph_table_and_image_markers_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mixed.docx"
+            _write_mixed_docx(path)
+
+            content = read_docx_text(path)
+            sections = DocxParser().parse(
+                Document(id="docx", title="Mixed", content=content, metadata=DocumentMetadata(format="docx", source=str(path)))
+            )
+
+        self.assertLess(content.index("Intro"), content.index("A | B"))
+        self.assertLess(content.index("A | B"), content.index("[Image 1:"))
+        self.assertEqual([section.kind for section in sections], ["paragraph", "table", "image"])
+
+
+def _write_mixed_docx(path: Path) -> None:
+    import base64
+
+    from docx import Document as DocxDocument  # type: ignore[import-untyped]
+
+    image_path = path.with_suffix(".png")
+    image_path.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+    )
+    document = DocxDocument()
+    document.add_paragraph("Intro")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "A"
+    table.cell(0, 1).text = "B"
+    table.cell(1, 0).text = "1"
+    table.cell(1, 1).text = "2"
+    paragraph = document.add_paragraph()
+    paragraph.add_run().add_picture(str(image_path))
+    document.save(path)
 
 
 if __name__ == "__main__":

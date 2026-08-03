@@ -17,6 +17,7 @@ def build_chunk_metadata(
         "document": document.title,
         "section": section.title,
         "section_level": section.level,
+        "section_kind": section.kind,
         "level": section.level,
         "title": section.title,
         "source": document.metadata.source,
@@ -26,4 +27,3 @@ def build_chunk_metadata(
         "chunk_count": chunk_count,
         **section.metadata,
     }
-

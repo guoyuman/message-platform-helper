@@ -23,7 +23,7 @@
     "similarity_threshold": 0.2
   },
   "chunk": {
-    "size": 600,
-    "overlap": 50
+    "strategy": "semantic_section",
+    "max_chars_per_chunk": 600
   }
 }

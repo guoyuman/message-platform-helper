@@ -10,6 +10,7 @@ from ..models import Document, DocumentSection, SectionKind
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+")
 TABLE_RE = re.compile(r"^\s*\|.*\|\s*$")
+IMAGE_RE = re.compile(r"^\s*!\[.*?\]\(.+?\)\s*$")
 
 
 class MarkdownParser:
@@ -17,27 +18,15 @@ class MarkdownParser:
         sections: list[DocumentSection] = []
         current_title = document.title
         current_level = 0
-        buffer: list[str] = []
-
-        def flush(kind: SectionKind = "text") -> None:
-            nonlocal buffer
-            content = "\n".join(buffer).strip()
-            if content:
-                sections.append(DocumentSection(title=current_title, level=current_level, content=content, kind=kind))
-            buffer = []
 
         for block in _blocks(document.content):
             heading = HEADING_RE.match(block.splitlines()[0] if block else "")
             if heading:
-                flush()
                 current_level = len(heading.group(1))
                 current_title = heading.group(2).strip()
                 continue
             kind = _block_kind(block)
-            if buffer and kind != _block_kind("\n".join(buffer)):
-                flush(kind=_block_kind("\n".join(buffer)))
-            buffer.append(block)
-        flush(kind=_block_kind("\n".join(buffer)))
+            sections.append(DocumentSection(title=current_title, level=current_level, content=block, kind=kind))
         if not sections and document.content.strip():
             sections.append(DocumentSection(title=document.title, level=0, content=document.content.strip(), kind="text"))
         return sections
@@ -53,4 +42,6 @@ def _block_kind(block: str) -> SectionKind:
         return "list"
     if lines and all(TABLE_RE.match(line) for line in lines):
         return "table"
+    if lines and all(IMAGE_RE.match(line) for line in lines):
+        return "image"
     return "paragraph"

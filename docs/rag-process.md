@@ -4,8 +4,8 @@
 
 1. 通过 `/api/knowledge/ingest` 或 CLI `ingest` 写入文本、Markdown、PDF、DOCX。
 2. loader 提取文本，并记录文件名、文件类型、文本长度。
-3. parser 按标题、段落、页文本和表格生成结构化 section。
-4. chunker 使用中文友好的递归切片，默认 `chunk_size=900`、`chunk_overlap=120`。
+3. parser 按标题、段落、页文本、表格和图片生成结构化 section。
+4. chunker 默认按语义 section/段落/表格/图片生成 chunk；`max_chars_per_chunk` 只作为单个语义块过长时的兜底上限。
 5. embedding provider 为每个 chunk 生成固定维度向量。
 6. PostgreSQL 表 `documents`、`chunks` 保存文档、chunk、metadata、embedding。
 7. 检索时并行使用 PostgreSQL FTS、中文 substring fallback 和 pgvector 相似度，再通过 RRF 与 reranker 排序。

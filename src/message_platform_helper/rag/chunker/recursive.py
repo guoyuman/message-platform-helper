@@ -10,14 +10,14 @@ from .base import ChunkStrategy
 
 
 class RecursiveChunkStrategy(ChunkStrategy):
-    def __init__(self, chunk_size: int = 600, chunk_overlap: int = 120) -> None:
-        self.chunk_size = chunk_size
+    def __init__(self, chunk_size: int = 600, chunk_overlap: int = 120, *, max_chunk_chars: int | None = None) -> None:
+        self.max_chunk_chars = int(max_chunk_chars or chunk_size)
         self.chunk_overlap = chunk_overlap
 
     def chunk(self, document: Document, sections: list[DocumentSection]) -> list[Chunk]:
         chunks: list[Chunk] = []
         for section in sections or [DocumentSection(title=document.title, level=0, content=document.content)]:
-            parts = split_section(section.content, self.chunk_size, self.chunk_overlap)
+            parts = split_section(section.content, self.max_chunk_chars, section_kind=section.kind)
             for part_index, part in enumerate(parts):
                 global_index = len(chunks)
                 metadata = build_chunk_metadata(document, section, chunk_index=part_index, chunk_count=len(parts))
@@ -34,44 +34,82 @@ class RecursiveChunkStrategy(ChunkStrategy):
         return chunks
 
 
-def split_section(text: str, chunk_size: int, chunk_overlap: int = 50) -> list[str]:
+def split_section(text: str, max_chunk_chars: int = 600, chunk_overlap: int = 50, *, section_kind: str = "text") -> list[str]:
     normalized = text.strip()
     if not normalized:
         return []
-    if len(normalized) <= chunk_size:
+    if section_kind == "image":
         return [normalized]
+    if section_kind == "table":
+        return _split_table(normalized, max_chunk_chars)
 
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", normalized) if part.strip()]
     chunks: list[str] = []
-    current = ""
-    for paragraph in paragraphs or [normalized]:
-        candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
-        if len(candidate) <= chunk_size:
-            current = candidate
-            continue
-        if current:
-            chunks.append(current)
-        if len(paragraph) <= chunk_size:
-            current = paragraph
+    for block in _semantic_blocks(normalized, section_kind):
+        if len(block) <= max_chunk_chars:
+            chunks.append(block)
         else:
-            chunks.extend(_split_long_paragraph(paragraph, chunk_size, chunk_overlap))
-            current = ""
-    if current:
-        chunks.append(current)
+            chunks.extend(_split_long_semantic_block(block, max_chunk_chars))
     return chunks
 
 
-def _split_long_paragraph(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
-    separators = "。！？；.!?;\n"
+def _semantic_blocks(text: str, section_kind: str) -> list[str]:
+    blocks = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    if section_kind == "list":
+        return _list_items(text) or blocks or [text]
+    return blocks or [text]
+
+
+def _list_items(text: str) -> list[str]:
+    items: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if re.match(r"^\s*(?:[-*+]|\d+\.)\s+", line) and current:
+            items.append("\n".join(current).strip())
+            current = [line.strip()]
+        else:
+            current.append(line.strip())
+    if current:
+        items.append("\n".join(current).strip())
+    return [item for item in items if item]
+
+
+def _split_table(text: str, chunk_size: int) -> list[str]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) <= 1:
+        return [text]
+    header = lines[0]
     chunks: list[str] = []
-    start = 0
-    step = max(chunk_size - chunk_overlap, 1)
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-        if end < len(text):
-            boundary = max(text.rfind(separator, start, end) for separator in separators)
-            if boundary > start + max(chunk_size // 2, 1):
-                end = boundary + 1
-        chunks.append(text[start:end].strip())
-        start = max(end - chunk_overlap, start + step)
+    current: list[str] = [header]
+    for row in lines[1:]:
+        candidate = "\n".join([*current, row])
+        if len(candidate) <= chunk_size or len(current) == 1:
+            current.append(row)
+            continue
+        chunks.append("\n".join(current))
+        current = [header, row]
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def _split_long_semantic_block(text: str, chunk_size: int) -> list[str]:
+    sentences = _semantic_units(text)
+    if len(sentences) <= 1:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        candidate = f"{current}{sentence}" if current else sentence
+        if len(candidate) <= chunk_size or not current:
+            current = candidate
+            continue
+        chunks.append(current.strip())
+        current = sentence
+    if current:
+        chunks.append(current.strip())
     return [chunk for chunk in chunks if chunk]
+
+
+def _semantic_units(text: str) -> list[str]:
+    matches = re.findall(r".+?(?:[。！？；.!?;]+|$)", text, flags=re.S)
+    return [match.strip() for match in matches if match.strip()]

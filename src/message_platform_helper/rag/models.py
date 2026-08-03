@@ -12,7 +12,7 @@ from ..models import now_ts
 
 JsonDict = dict[str, Any]
 DocumentFormat = Literal["text", "markdown", "pdf", "docx", "xlsx", "unknown"]
-SectionKind = Literal["heading", "paragraph", "list", "table", "text"]
+SectionKind = Literal["heading", "paragraph", "list", "table", "image", "text"]
 
 
 @dataclass
