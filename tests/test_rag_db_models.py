@@ -37,7 +37,7 @@ class RagDatabaseModelTests(unittest.TestCase):
             },
         )
         self.assertTrue(columns["id"].primary_key)
-        self.assertEqual(str(columns["embedding"].type), "VECTOR(1536)")
+        self.assertEqual(str(columns["embedding"].type), "VECTOR(1024)")
         self.assertEqual(columns["content_tsv"].type.__class__.__name__, "TSVECTOR")
         self.assertEqual(indexes["ix_chunks_embedding_hnsw"].dialect_options["postgresql"]["using"], "hnsw")
         self.assertEqual(indexes["ix_chunks_content_tsv"].dialect_options["postgresql"]["using"], "gin")

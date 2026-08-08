@@ -12,7 +12,7 @@
   "embedding": {
     "provider": "openai",
     "model": "text-embedding-3-large",
-    "dimensions": 1536
+    "dimensions": 1024
   },
   "retrieval": {
     "keyword_top_k": 20,

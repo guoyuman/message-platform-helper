@@ -21,12 +21,12 @@ from message_platform_helper.rag import (
 
 class HybridRagPipelineTests(unittest.TestCase):
     def test_deterministic_embedding_has_configured_dimension(self) -> None:
-        provider = DeterministicEmbeddingProvider(dimensions=1536)
+        provider = DeterministicEmbeddingProvider(dimensions=1024)
 
         vectors = provider.embed(["\u90ae\u4ef6\u53d1\u9001\u5931\u8d25\u600e\u4e48\u529e"])
 
         self.assertEqual(len(vectors), 1)
-        self.assertEqual(len(vectors[0]), 1536)
+        self.assertEqual(len(vectors[0]), 1024)
         self.assertAlmostEqual(sum(value * value for value in vectors[0]), 1.0, places=6)
 
     def test_document_pipeline_uses_structure_first_chunking(self) -> None:

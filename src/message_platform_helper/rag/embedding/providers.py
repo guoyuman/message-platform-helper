@@ -17,10 +17,13 @@ from .base import EmbeddingProvider
 class DeterministicEmbeddingProvider:
     """Offline embedding provider for tests and local dry-runs."""
 
-    dimensions: int = 1536
+    dimensions: int = 1024
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [_hash_embedding(text, self.dimensions) for text in texts]
+
+    def embed_query(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
 
 
 @dataclass
@@ -28,7 +31,7 @@ class OpenAIEmbeddingProvider:
     model: str = ""
     api_key: str = ""
     base_url: str = ""
-    dimensions: int = 1536
+    dimensions: int = 1024
     timeout_seconds: int = 30
     batch_size: int = 10
 
@@ -73,11 +76,15 @@ class OpenAIEmbeddingProvider:
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Request failed: {e}")
 
+    def embed_query(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
 
 @dataclass
 class BGEEmbeddingProvider:
-    model: str = "BAAI/bge-small-zh-v1.5"
-    dimensions: int = 1536
+    model: str = "BAAI/bge-m3"
+    dimensions: int = 1024
+    query_instruction: str = "为这个句子生成表示以用于检索相关文章："
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         try:
@@ -87,14 +94,18 @@ class BGEEmbeddingProvider:
             raise RuntimeError("BGE embedding requires sentence-transformers to be installed.") from exc
         model = SentenceTransformer(self.model)
         vectors = model.encode(texts, normalize_embeddings=True)
-        return [_fit_dimensions([float(value) for value in vector], self.dimensions) for vector in vectors]
+        return [[float(value) for value in vector] for vector in vectors]
+
+    def embed_query(self, texts: list[str]) -> list[list[float]]:
+        """BGE 系列是指令微调模型：query 侧必须加检索指令前缀，文档侧不加。"""
+        return self.embed([f"{self.query_instruction}{text}" for text in texts])
 
 
 def build_embedding_provider(config: dict[str, Any] | None = None) -> EmbeddingProvider:
     embedding = dict((config or {}).get("embedding") or config or {})
     provider = str(embedding.get("provider") or os.environ.get("MESSAGE_HELPER_EMBEDDING_PROVIDER") or "deterministic").lower()
     model = str(embedding.get("model") or os.environ.get("MESSAGE_HELPER_EMBEDDING_MODEL") or "")
-    dimensions = int(embedding.get("dimensions") or os.environ.get("MESSAGE_HELPER_EMBEDDING_DIMENSIONS") or 1536)
+    dimensions = int(embedding.get("dimensions") or os.environ.get("MESSAGE_HELPER_EMBEDDING_DIMENSIONS") or 1024)
     print(f"Using embedding provider with model {model} and dimensions {dimensions}.")
     print(f"Using embedding provider {provider}.")
     if provider == "aliyuncs":
@@ -105,7 +116,7 @@ def build_embedding_provider(config: dict[str, Any] | None = None) -> EmbeddingP
             dimensions=dimensions,
         )
     if provider == "bge":
-        return BGEEmbeddingProvider(model=model or "BAAI/bge-small-zh-v1.5", dimensions=dimensions)
+        return BGEEmbeddingProvider(model=model or "BAAI/bge-m3", dimensions=dimensions)
 
     return DeterministicEmbeddingProvider(dimensions=dimensions)
 
@@ -148,14 +159,6 @@ def _embedding_payload(texts: list[str], model: str, url: str) -> dict[str, Any]
     if "/services/embeddings/" in url:
         return {"model": model, "input": {"texts": texts}}
     return {"model": model, "input": texts}
-
-
-def _fit_dimensions(vector: list[float], dimensions: int) -> list[float]:
-    if len(vector) == dimensions:
-        return vector
-    if len(vector) > dimensions:
-        return vector[:dimensions]
-    return [*vector, *([0.0] * (dimensions - len(vector)))]
 
 
 def _patch_xlm_roberta_prepare_for_model() -> None:

@@ -87,7 +87,7 @@ class ChunkRecord(TimestampMixin, Base):
         nullable=True,
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(Vector(1536), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content_tsv: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)

@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from ..models import Document, DocumentMetadata, file_document_identity, normalize_tags, stable_document_id
+from ..vision import rag_image_dir
 from .base import DocumentLoader
 
 
@@ -38,6 +39,7 @@ def read_pdf_text(path: Path) -> str:
     except ImportError as exc:
         raise RuntimeError("PDF ingestion requires PyMuPDF. Install the optional dependency 'pymupdf'.") from exc
     pages: list[str] = []
+    image_dir = rag_image_dir() / path.stem
     with fitz.open(path) as document:
         for index, page in enumerate(document, start=1):
             page_parts = [f"[Page {index}]"]
@@ -45,7 +47,7 @@ def read_pdf_text(path: Path) -> str:
             if text:
                 page_parts.append(text)
             page_parts.extend(_extract_pdf_tables(page, index))
-            page_parts.extend(_extract_pdf_images(page, index))
+            page_parts.extend(_extract_pdf_images(page, index, image_dir=image_dir))
             if len(page_parts) > 1:
                 pages.append("\n\n".join(page_parts))
     return "\n\n".join(pages)
@@ -78,7 +80,7 @@ def _extract_pdf_tables(page: object, page_number: int) -> list[str]:
     return blocks
 
 
-def _extract_pdf_images(page: object, page_number: int) -> list[str]:
+def _extract_pdf_images(page: object, page_number: int, *, image_dir: Path) -> list[str]:
     try:
         image_infos = page.get_image_info()  # type: ignore[attr-defined]
     except Exception:
@@ -98,8 +100,31 @@ def _extract_pdf_images(page: object, page_number: int) -> list[str]:
             details.append(f"size={width}x{height}")
         if bbox:
             details.append(f"bbox={_format_bbox(bbox)}")
+        saved = _save_pdf_image(page, bbox, image_dir, page_number, image_index)
+        if saved:
+            details.append(f"path={saved}")
         markers.append(f"[Image {page_number}.{image_index}: {', '.join(details)}]")
     return markers
+
+
+def _save_pdf_image(page: object, bbox: object, image_dir: Path, page_number: int, image_index: int) -> str:
+    """按 bbox 截取图片区域渲染为 PNG 落盘，返回文件路径；失败返回空串。"""
+    if not bbox:
+        return ""
+    try:
+        import fitz  # type: ignore[import-untyped]
+
+        rect = fitz.Rect(bbox)
+        if rect.is_empty or rect.width <= 0 or rect.height <= 0:
+            return ""
+        image_dir.mkdir(parents=True, exist_ok=True)
+        target = image_dir / f"{page_number}.{image_index}.png"
+        pixmap = page.get_pixmap(clip=rect, dpi=150)  # type: ignore[attr-defined]
+        pixmap.save(str(target))
+        return str(target)
+    except Exception as exc:  # pragma: no cover - depends on PDF internals
+        LOGGER.debug("PDF image save failed page=%s index=%s error=%s", page_number, image_index, exc)
+        return ""
 
 
 def _format_bbox(bbox: object) -> str:

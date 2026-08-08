@@ -24,5 +24,5 @@ class VectorRetriever:
         merged_filters = dict(filters or {})
         if tags:
             merged_filters["tags"] = tags
-        embedding = self.embedding_provider.embed([query])[0]
+        embedding = self.embedding_provider.embed_query([query])[0]
         return self.repository.search(embedding, limit=max(limit, self.top_k), filters=merged_filters)[:limit]
