@@ -11,7 +11,7 @@ from threading import Lock
 
 from .business_object_resolver import BusinessObjectResolver
 from ..models import AgentResult, AgentStep, JsonDict, Tool
-from ..react import AgentContext, ReActAgent
+from ..react import AgentContext, FunctionCallingAgent
 
 
 DEFAULT_SOURCE_LANGUAGE = "en_US"
@@ -148,32 +148,89 @@ MOCK_DOMAIN_TREE: List[JsonDict] = [
 
 
 @dataclass
-class TemplateAgent(ReActAgent):
+class TemplateAgent(FunctionCallingAgent):
     name = "template"
 
     def tools(self, context: AgentContext) -> Dict[str, Tool]:
         return {
             "template.translate": Tool(
                 "template.translate",
-                "Translate an existing template to a target language.",
+                "Translate an existing template to a target language. Requires the source template detail or templateId.",
                 lambda payload: self._translate(context, payload),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "templateId": {"type": "string", "description": "Id of the existing template to translate."},
+                        "targetLanguage": {"type": "string", "description": "Target language, e.g. ar_SA, en_US, zh_CN, id_ID."},
+                        "sourceLanguage": {"type": "string", "description": "Source language of the template content. Defaults to en_US."},
+                    },
+                    "required": ["targetLanguage"],
+                },
             ),
             "template.sync_language": Tool(
                 "template.sync_language",
-                "Add a missing target-language version to templates in a scope.",
+                "Add missing target-language versions to templates in a scope. Resolves the business object first when only a business object name is given.",
                 lambda payload: self._sync_language(context, payload),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "businessObject": {"type": "string", "description": "Business object name, e.g. 采购订单, to resolve via domain.tree.get + business_object.resolve."},
+                        "businessObjectCode": {"type": "string", "description": "Business object code resolved from the domain tree, e.g. purchase_order."},
+                        "documentId": {"type": "string", "description": "Document id used to scope the template query."},
+                        "msgDocumentId": {"type": "string", "description": "Message document id; defaults to documentId."},
+                        "orgId": {"type": "string", "description": "Organization id scope."},
+                        "groupCode": {"type": "string", "description": "Group code scope; defaults to businessprocess when a document id is set."},
+                        "appCode": {"type": "string", "description": "Application code scope."},
+                        "templateTypeId": {"type": "string", "description": "Template type id scope."},
+                        "templates": {"type": "array", "items": {"type": "object"}, "description": "Explicit template list to sync; when omitted the agent queries the template list for the scope."},
+                        "targetLanguage": {"type": "string", "description": "Target language, e.g. ar_SA, en_US, zh_CN, id_ID."},
+                        "sourceLanguage": {"type": "string", "description": "Source language of template content. Defaults to en_US."},
+                        "syncAll": {"type": "boolean", "description": "Sync all templates in the scope."},
+                        "batchSize": {"type": "integer", "description": "Templates per batch. Defaults to 20."},
+                        "maxConcurrency": {"type": "integer", "description": "Parallel sync workers. Defaults to 4."},
+                    },
+                    "required": ["targetLanguage"],
+                },
             ),
             "domain.tree.get": Tool(
                 "domain.tree.get",
-                "Fetch the full domain tree for business-object matching.",
+                "Fetch the full domain tree for business-object matching. Call before business_object.resolve.",
                 lambda payload: self._get_domain_tree(context, payload),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "businessObject": {"type": "string", "description": "Business object name to look up in the tree; stored for the resolver step."},
+                        "orgId": {"type": "string", "description": "Organization id scope."},
+                    },
+                    "required": [],
+                },
             ),
             "business_object.resolve": Tool(
                 "business_object.resolve",
-                "Resolve a business object code from the fetched domain tree.",
+                "Resolve a business object code from the fetched domain tree. Requires domain.tree.get to have been called first.",
                 lambda payload: self._resolve_business_object(context, payload),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "businessObject": {"type": "string", "description": "Business object name to resolve, e.g. 采购订单."},
+                        "businessObjectName": {"type": "string", "description": "Alias of businessObject."},
+                    },
+                    "required": ["businessObject"],
+                },
             ),
         }
+
+    def system_prompt_for(self, context: AgentContext) -> str:
+        return (
+            "你是企业消息平台的模板翻译同步 agent。"
+            "同步模板到目标语种的流程：当只知道业务对象名称（如采购订单）时，"
+            "先用 domain.tree.get 获取领域树，再用 business_object.resolve 匹配业务对象编码和上级信息，"
+            "然后用 template.sync_language 查询模板列表并补充缺失的目标语种版本。"
+            "businessObjectCode、documentId 必须来自 business_object.resolve 的返回结果，不得编造；"
+            "目标语种（targetLanguage）从用户输入识别，如阿拉伯语对应 ar_SA。"
+            "如果已知模板 id 或模板详情，直接调用 template.translate。"
+            "翻译和保存结果以工具返回为准，不要虚构同步结果。"
+        )
 
     def plan(self, context: AgentContext) -> List[JsonDict]:
         payload = _normalize_request(context, _template_payload(context))

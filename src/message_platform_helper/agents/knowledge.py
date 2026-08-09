@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 from ..models import AgentResult, AgentStep, JsonDict, KnowledgeChunk, Tool
-from ..react import AgentContext, ReActAgent
+from ..react import AgentContext, FunctionCallingAgent
 
 
 @dataclass
-class KnowledgeAgent(ReActAgent):
+class KnowledgeAgent(FunctionCallingAgent):
     name = "knowledge"
 
     def tools(self, context: AgentContext) -> Dict[str, Tool]:

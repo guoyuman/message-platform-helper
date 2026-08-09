@@ -6,7 +6,6 @@ import threading
 import time
 from typing import Callable
 
-from ..application import response_to_streaming_events
 from ..models import to_jsonable
 from ..orchestrator import MessagePlatformHelper, request_from_payload
 
@@ -65,22 +64,26 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
             sequence = 1
             started_at = time.perf_counter()
             yield _stream_event("Started", {"message": "request accepted"}, enriched, sequence)
+            sequence += 1
+            yield _stream_event("Running", {"message": "executing workflow"}, enriched, sequence)
+            event_queue: queue.Queue = queue.Queue()
+
+            def on_step(step):
+                event_queue.put(("step", step))
+
+            def run_helper():
+                try:
+                    response = helper.handle(request_from_payload(enriched), on_step=on_step)
+                    event_queue.put(("response", response))
+                except Exception as exc:
+                    event_queue.put(("error", exc))
+
+            threading.Thread(target=run_helper, daemon=True).start()
+            response = None
             try:
-                sequence += 1
-                yield _stream_event("Running", {"message": "executing workflow"}, enriched, sequence)
-                result_queue: queue.Queue = queue.Queue(maxsize=1)
-
-                def run_helper():
+                while response is None:
                     try:
-                        result_queue.put(("response", helper.handle(request_from_payload(enriched))))
-                    except Exception as exc:
-                        result_queue.put(("error", exc))
-
-                threading.Thread(target=run_helper, daemon=True).start()
-                while True:
-                    try:
-                        result_type, result = result_queue.get(timeout=STREAM_KEEPALIVE_SECONDS)
-                        break
+                        kind, value = event_queue.get(timeout=STREAM_KEEPALIVE_SECONDS)
                     except queue.Empty:
                         sequence += 1
                         yield _stream_event(
@@ -89,15 +92,20 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
                             enriched,
                             sequence,
                         )
-                if result_type == "error":
-                    raise result
-
-                response = result
-                for event in response_to_streaming_events(response):
-                    serialized = to_jsonable(event)
-                    if serialized.get("type") in {"Done", "Error"}:
-                        serialized.setdefault("data", {})["response"] = to_jsonable(response)
-                    yield "data: " + json.dumps(serialized, ensure_ascii=False) + "\n\n"
+                        continue
+                    if kind == "step":
+                        # Live tool-call event, streamed the moment the step is recorded.
+                        sequence += 1
+                        yield _stream_event(
+                            "ToolCall",
+                            {"agent": value.agent, "step": to_jsonable(value)},
+                            enriched,
+                            sequence,
+                        )
+                        continue
+                    if kind == "error":
+                        raise value
+                    response = value
             except Exception as exc:
                 sequence += 1
                 yield _stream_event(
@@ -111,6 +119,27 @@ def create_app(helper_factory: HelperFactory = MessagePlatformHelper.from_env):
                     enriched,
                     sequence,
                 )
+                return
+
+            # Trailing events: ToolCall steps were already streamed live, so
+            # only decision, sources, and the final Done/Error remain.
+            sequence += 1
+            yield _stream_event("Reasoning", {"decision": to_jsonable(response.decision)}, enriched, sequence)
+            for chunk in response.retrieved:
+                sequence += 1
+                yield _stream_event("Source", {"source": to_jsonable(chunk)}, enriched, sequence)
+            sequence += 1
+            yield _stream_event(
+                "Done" if response.ok else "Error",
+                {
+                    "ok": response.ok,
+                    "issues": response.issues,
+                    "metrics": response.metrics,
+                    "response": to_jsonable(response),
+                },
+                enriched,
+                sequence,
+            )
 
         return StreamingResponse(events(), media_type="text/event-stream")
 

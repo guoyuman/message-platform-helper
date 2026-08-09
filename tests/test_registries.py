@@ -29,14 +29,14 @@ from message_platform_helper.orchestrator import MessagePlatformHelper
 from message_platform_helper.platform import PlatformGateway
 from message_platform_helper.rag import KnowledgeBaseRetriever, build_rag_service
 from message_platform_helper.rate_limit import MemoryCounterStore
-from message_platform_helper.react import AgentContext, ReActAgent
+from message_platform_helper.react import AgentContext, RuleBasedAgent
 from message_platform_helper.tools import ToolRegistry
 
 from tests.fakes import InMemoryKnowledgeBase
 
 
 @dataclass
-class NoopAgent(ReActAgent):
+class NoopAgent(RuleBasedAgent):
     name = "noop"
 
     def tools(self, context: AgentContext) -> Dict[str, Tool]:
@@ -50,7 +50,7 @@ class NoopAgent(ReActAgent):
 
 
 @dataclass
-class RegistryOnlyAgent(ReActAgent):
+class RegistryOnlyAgent(RuleBasedAgent):
     name = "registry_only"
 
     def tools(self, context: AgentContext) -> Dict[str, Tool]:

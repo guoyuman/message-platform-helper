@@ -171,6 +171,9 @@ class Tool:
     description: str
     handler: ToolHandler
     requires_context: bool = False
+    # JSON Schema for arguments, used when exporting the tool to LLM
+    # function-calling protocols. Empty dict means no declared parameters.
+    parameters: JsonDict = field(default_factory=dict)
 
     def run(self, payload: JsonDict, context: Any | None = None) -> JsonDict:
         if self.requires_context:
@@ -196,6 +199,7 @@ class ToolSpec:
     priority: int = 100
     enabled: bool = True
     timeout_seconds: int = 30
+    parameters: JsonDict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

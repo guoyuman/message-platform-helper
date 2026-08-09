@@ -31,7 +31,8 @@ class ConfigDeploymentTests(unittest.TestCase):
         self.assertTrue((ROOT / "Dockerfile").exists())
         self.assertTrue((ROOT / "deploy" / "kubernetes" / "message-platform-helper.yaml").exists())
 
-    def test_settings_load_llm_from_model_config(self) -> None:
+    @patch("message_platform_helper.config._load_dotenv")
+    def test_settings_load_llm_from_model_config(self, _mock_dotenv: object) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_dir = root / "config"
@@ -92,7 +93,8 @@ class ConfigDeploymentTests(unittest.TestCase):
         self.assertEqual(settings.llm_api_key, "env-key")
         self.assertEqual(settings.llm_model, "env-model")
 
-    def test_openai_env_aliases_enable_llm(self) -> None:
+    @patch("message_platform_helper.config._load_dotenv")
+    def test_openai_env_aliases_enable_llm(self, _mock_dotenv: object) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = {
                 "MESSAGE_HELPER_DATA_DIR": tmp,
@@ -108,7 +110,8 @@ class ConfigDeploymentTests(unittest.TestCase):
         self.assertEqual(settings.llm_model, "alias-model")
         self.assertIsInstance(build_llm(settings), OpenAICompatibleLLMClient)
 
-    def test_llm_health_metadata_explains_offline_fallback(self) -> None:
+    @patch("message_platform_helper.config._load_dotenv")
+    def test_llm_health_metadata_explains_offline_fallback(self, _mock_dotenv: object) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings_env = {"MESSAGE_HELPER_DATA_DIR": tmp, "MESSAGE_HELPER_LLM_MODEL": "only-model"}
             with patch.dict(os.environ, settings_env, clear=True):

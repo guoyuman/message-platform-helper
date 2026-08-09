@@ -7,10 +7,9 @@ from typing import Callable, Dict, Iterable, List
 
 from ..models import AgentSpec
 from ..rate_limit import CounterStore
-from ..react import ReActAgent
+from ..react import RuleBasedAgent
 
-
-AgentFactory = Callable[[], ReActAgent]
+AgentFactory = Callable[[], RuleBasedAgent]
 
 
 @dataclass(frozen=True)
@@ -18,7 +17,7 @@ class RegisteredAgent:
     spec: AgentSpec
     factory: AgentFactory
 
-    def create(self) -> ReActAgent:
+    def create(self) -> RuleBasedAgent:
         return self.factory()
 
 
@@ -41,14 +40,14 @@ class AgentRegistry:
         except KeyError as exc:
             raise KeyError(f"Agent '{name}' is not registered.") from exc
 
-    def create(self, name: str) -> ReActAgent:
+    def create(self, name: str) -> RuleBasedAgent:
         registered = self.get(name)
         if not registered.spec.enabled:
             raise ValueError(f"Agent '{name}' is disabled.")
         return registered.create()
 
-    def resolve(self, names: Iterable[str], *, strict: bool = False) -> List[ReActAgent]:
-        agents: List[ReActAgent] = []
+    def resolve(self, names: Iterable[str], *, strict: bool = False) -> List[RuleBasedAgent]:
+        agents: List[RuleBasedAgent] = []
         for name in names:
             registered = self._agents.get(str(name))
             if not registered:

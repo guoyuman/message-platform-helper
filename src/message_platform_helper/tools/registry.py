@@ -37,6 +37,8 @@ class ToolRegistry:
 
     def register_tool(self, tool: Tool, spec: ToolSpec | None = None, *, replace_existing: bool = False) -> "ToolRegistry":
         tool_spec = spec or ToolSpec(name=tool.name, description=tool.description)
+        if spec is not None and spec.parameters:
+            tool = Tool(tool.name, tool.description, tool.handler, tool.requires_context, spec.parameters)
         return self.register(tool_spec, lambda: tool, replace_existing=replace_existing)
 
     def get(self, name: str) -> RegisteredTool:

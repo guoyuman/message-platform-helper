@@ -198,6 +198,23 @@ class LLMClient:
     def complete_json(self, system: str, payload: JsonDict) -> JsonDict:
         raise NotImplementedError
 
+    def complete_chat(
+        self,
+        messages: List[JsonDict],
+        tools: List[JsonDict] | None = None,
+        tool_choice: JsonDict | str | None = None,
+    ) -> JsonDict:
+        """Native chat completions with optional function-calling tools.
+
+        Returns the assistant message dict (``content`` plus ``tool_calls``
+        when the model chose to call tools). ``tool_choice`` is either the
+        string ``"auto"``/``"none"`` or a forced tool object; not every
+        provider accepts a forced tool (DeepSeek thinking mode returns 400).
+        Only providers that implement the tools protocol override this; the
+        offline rule-based client intentionally does not.
+        """
+        raise NotImplementedError
+
     def answer(self, text: str, system_prompt: str = "") -> JsonDict:
         system = system_prompt or (
             "Answer the user's chat message. "
@@ -739,8 +756,51 @@ class OpenAICompatibleLLMClient(LLMClient):
         except requests.Timeout as exc:
             raise TimeoutError(f"LLM request timed out after 150s: model={self.model}, base_url={self.base_url}") from exc
         except requests.RequestException as exc:
-            raise RuntimeError(f"LLM request failed: model={self.model}, base_url={self.base_url}, error={exc}") from exc
+            raise _llm_request_error(self.model, self.base_url, exc) from exc
         return json.loads(result["choices"][0]["message"]["content"])
+
+    def complete_chat(
+        self,
+        messages: List[JsonDict],
+        tools: List[JsonDict] | None = None,
+        tool_choice: JsonDict | str | None = None,
+    ) -> JsonDict:
+        body: JsonDict = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+        }
+        if tools:
+            body["tools"] = tools
+        if tool_choice:
+            body["tool_choice"] = tool_choice
+        # No response_format here: json_object mode is incompatible with
+        # the tools protocol on several providers. Tool-call JSON is the
+        # structured-output mechanism in this path.
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                json=body,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=150,
+            )
+            response.raise_for_status()
+            result = response.json()
+        except requests.Timeout as exc:
+            raise TimeoutError(f"LLM request timed out after 150s: model={self.model}, base_url={self.base_url}") from exc
+        except requests.RequestException as exc:
+            raise _llm_request_error(self.model, self.base_url, exc) from exc
+        return result["choices"][0]["message"]
+
+
+def _llm_request_error(model: str, base_url: str, exc: requests.RequestException) -> RuntimeError:
+    """Build the RuntimeError for a failed LLM request, including the
+    provider's response body when one was returned (400s carry the real
+    reason, e.g. unsupported tool_choice)."""
+    detail = ""
+    if exc.response is not None:
+        detail = f", body={exc.response.text[:300]}"
+    return RuntimeError(f"LLM request failed: model={model}, base_url={base_url}, error={exc}{detail}")
 
 
 def build_llm(settings: Settings) -> LLMClient:

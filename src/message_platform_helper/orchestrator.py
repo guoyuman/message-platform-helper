@@ -20,7 +20,7 @@ from .models import AgentResult, AssistantRequest, HelperResponse, JsonDict, Kno
 from .platform import PlatformGateway
 from .rag.embedding import build_embedding_provider
 from .rate_limit import CounterStore, build_counter_store
-from .react import AgentContext, ReActAgent
+from .react import AgentContext, RuleBasedAgent
 from .tools import ToolRegistry
 from .workflow import WorkflowExecutor, WorkflowRegistry, build_default_workflow_registry, build_workflow_registry_from_config
 
@@ -109,7 +109,7 @@ class MessagePlatformHelper:
             rag_service=rag_service,
         )
 
-    def handle(self, request: AssistantRequest) -> HelperResponse:
+    def handle(self, request: AssistantRequest, on_step=None) -> HelperResponse:
         trace = TraceContext.from_request(request)
         tenant_context = TenantContext.from_request(request)
         metrics = RequestMetrics()
@@ -146,6 +146,7 @@ class MessagePlatformHelper:
             tool_registry=self.tool_registry,
             rag_service=self.rag_service,
             tenant_context=tenant_context,
+            on_step=on_step,
         )
         if self.workflow_executor is None:
             raise RuntimeError("Workflow executor is not configured.")
@@ -216,8 +217,10 @@ class MessagePlatformHelper:
         tenant_context: TenantContext,
         metrics: RequestMetrics,
     ) -> tuple[List[AgentResult], List[KnowledgeChunk]]:
-        results: List[AgentResult] = []
+        from concurrent.futures import ThreadPoolExecutor
+
         retrieved: List[KnowledgeChunk] = []
+        prepared: List[tuple[TaskSlice, AgentContext]] = []
         for task in task_slices:
             task_retrieved: List[KnowledgeChunk] = []
             if task.need_retrieval or task.agent == "knowledge":
@@ -238,20 +241,48 @@ class MessagePlatformHelper:
                 request_id=base_context.request.request_id,
                 trace_id=base_context.request.trace_id,
             )
-            task_context = AgentContext(
-                request=task_request,
-                memory=base_context.memory,
-                retrieved=task_retrieved,
-                llm=base_context.llm,
-                platform=base_context.platform,
-                tool_registry=base_context.tool_registry,
-                rag_service=base_context.rag_service,
-                tenant_context=base_context.tenant_context,
-                scratch={},
+            prepared.append(
+                (
+                    task,
+                    AgentContext(
+                        request=task_request,
+                        memory=base_context.memory,
+                        retrieved=task_retrieved,
+                        llm=base_context.llm,
+                        platform=base_context.platform,
+                        tool_registry=base_context.tool_registry,
+                        rag_service=base_context.rag_service,
+                        tenant_context=base_context.tenant_context,
+                        scratch={},
+                        on_step=base_context.on_step,
+                    ),
+                )
             )
+
+        # RAG retrieval above stays serial on the main thread: the postgres
+        # session behind rag_service is not thread-safe. Agent execution is
+        # parallel because each task has its own scratch and only touches
+        # thread-safe boundaries (LLM, platform HTTP, pre-retrieved chunks).
+        def run_task(task_context: AgentContext, task: TaskSlice) -> List[AgentResult]:
             started = time.perf_counter()
-            results.extend(self.workflow_executor.execute(task.workflow, [task.agent], task_context))
-            metrics.tool_time_ms += elapsed_ms(started)
+            try:
+                executor = self.workflow_executor
+                if executor is None:
+                    raise RuntimeError("Workflow executor is not configured.")
+                return executor.execute(task.workflow, [task.agent], task_context)
+            finally:
+                metrics.tool_time_ms += elapsed_ms(started)
+
+        results: List[AgentResult] = []
+        max_workers = min(len(prepared), 4)
+        if max_workers <= 1 or len(prepared) == 1:
+            for task, task_context in prepared:
+                results.extend(run_task(task_context, task))
+            return results, retrieved
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(run_task, task_context, task) for task, task_context in prepared]
+            for future in futures:
+                results.extend(future.result())
         return results, retrieved
 
     def load_memory_for_display(self, session_id: str, tenant_id: str = ""):
@@ -330,7 +361,7 @@ class MessagePlatformHelper:
             "database": {"type": "postgresql", "urlConfigured": bool(self.knowledge_base.database_url)},
         }
 
-    def _agent_sequence(self, names: List[str]) -> List[ReActAgent]:
+    def _agent_sequence(self, names: List[str]) -> List[RuleBasedAgent]:
         if self.agent_registry is None:
             return []
         return self.agent_registry.resolve(names)

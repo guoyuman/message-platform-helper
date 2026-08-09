@@ -1,4 +1,4 @@
-"""Tests for ReActAgent failure replanning (plan-and-execute + replanner).
+"""Tests for RuleBasedAgent failure replanning (plan-and-execute + replanner).
 
 Covers the recovery contract:
 - a failed observation (ok=False) triggers ``replan()`` before the remaining
@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from message_platform_helper.models import AgentStep, AssistantRequest, ConversationMemory, JsonDict, Tool
-from message_platform_helper.react import AgentContext, ReActAgent
+from message_platform_helper.react import AgentContext, RuleBasedAgent
 
 
 def _tool(name: str, handler) -> Tool:
@@ -33,7 +33,7 @@ def _context() -> AgentContext:
     )
 
 
-class _FlakyAgent(ReActAgent):
+class _FlakyAgent(RuleBasedAgent):
     """Primary tool fails once; replan() switches to a fallback tool."""
 
     name = "flaky"
@@ -68,7 +68,7 @@ class _FlakyAgent(ReActAgent):
         return {"ok": True, "status": "ok", "summary": "fallback worked"}
 
 
-class _NoReplanAgent(ReActAgent):
+class _NoReplanAgent(RuleBasedAgent):
     """Legacy shape: plan of two steps, first fails, no replan override."""
 
     name = "legacy"
@@ -107,7 +107,7 @@ class _StuckReplanAgent(_NoReplanAgent):
         return {"thought": "retry failing tool", "tool": "first", "input": {}}
 
 
-class _ExplodingToolAgent(ReActAgent):
+class _ExplodingToolAgent(RuleBasedAgent):
     name = "exploder"
 
     def tools(self, context: AgentContext) -> Dict[str, Tool]:

@@ -42,7 +42,7 @@ function App() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, thinkingStage]);
+  }, [messages, thinkingStage, trace]);
 
   async function loadHealth() {
     try {
@@ -206,7 +206,7 @@ function App() {
     }
     if (event.type === "ToolCall" && event.data?.step) {
       const step = event.data.step;
-      setThinkingStage(`正在执行 ${step.agent || "处理任务"}`);
+      setThinkingStage(`正在执行 ${step.agent || "处理任务"} → ${step.action || ""}`);
       setTrace((items) => [...items, { label: `${step.agent} / ${step.action}`, text: [step.thought, step.observation].filter(Boolean).join("\n"), ok: step.status === "ok" }]);
       return;
     }
@@ -281,6 +281,7 @@ function App() {
   const groupedSessions = groupSessions(mergeSessions(sessions, localSessions, sessionTitles));
   const recentMessages = getRecentMessages(memory);
   const activeTitle = sessionTitles[sessionId] || sessionTitle({ sessionId }, memory);
+  const lastUserIndex = messages.reduce((found, message, index) => (message.role === "user" ? index : found), -1);
 
   return (
     <div className="app-shell">
@@ -359,8 +360,25 @@ function App() {
 
         <section className="chat-panel">
           <div className="messages" aria-live="polite">
-            {messages.map((message, index) => <Message key={index} message={message} />)}
-            {thinkingStage ? <ThinkingMessage stage={thinkingStage} /> : null}
+            {messages.map((message, index) => {
+              const isLastUser = message.role === "user" && index === lastUserIndex;
+              return (
+                <React.Fragment key={index}>
+                  <Message message={message} />
+                  {isLastUser && (trace.length || thinkingStage) ? (
+                    <div className="message assistant">
+                      <div className="avatar">A</div>
+                      <div className="bubble">
+                        <div className="trace-list">
+                          {trace.map((item, traceIndex) => <TraceItem item={item} key={traceIndex} />)}
+                        </div>
+                        {thinkingStage ? <ThinkingLine stage={thinkingStage} /> : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </React.Fragment>
+              );
+            })}
             <div ref={messagesEndRef} aria-hidden="true"></div>
           </div>
           <form className="composer" id="chatForm" onSubmit={sendChat}>
@@ -442,31 +460,35 @@ function Message({ message }) {
   );
 }
 
-function ThinkingMessage({ stage }) {
+function ThinkingLine({ stage }) {
   return (
-    <div className="message assistant thinking-message" role="status" aria-label={stage}>
-      <div className="avatar">A</div>
-      <div className="bubble">
-        <div className="bubble-title">Assistant</div>
-        <div className="thinking-content">
-          <span>{stage}</span>
-          <span className="thinking-dots" aria-hidden="true">
-            <i></i><i></i><i></i>
-          </span>
-        </div>
-      </div>
+    <div className="thinking-line" role="status" aria-label={stage}>
+      <span className="thinking-dots" aria-hidden="true">
+        <i></i><i></i><i></i>
+      </span>
+      <span>{stage}</span>
     </div>
   );
 }
 
 function TraceItem({ item }) {
+  const [expanded, setExpanded] = useState(false);
+  const detail = [item.text].filter(Boolean).join("\n");
+  const toggle = detail ? () => setExpanded((value) => !value) : undefined;
   return (
-    <div className="trace-item">
+    <div
+      className={`trace-item ${item.ok ? "ok" : "error"}${expanded ? " expanded" : ""}`}
+      onClick={toggle}
+      role={toggle ? "button" : undefined}
+      tabIndex={toggle ? 0 : undefined}
+      onKeyDown={toggle ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } } : undefined}
+    >
       <div className="trace-head">
-        <span>{item.label}</span>
-        <span className={item.ok ? "status-ok" : "status-error"}>{item.ok ? "ok" : "error"}</span>
+        <span className="trace-status" aria-hidden="true">{item.ok ? "✓" : "✗"}</span>
+        <span className="trace-label" title={item.label}>{item.label}</span>
+        {detail ? <span className="trace-chevron" aria-hidden="true">{expanded ? "▾" : "▸"}</span> : null}
       </div>
-      <p>{item.text}</p>
+      {expanded && detail ? <pre className="trace-detail">{detail}</pre> : null}
     </div>
   );
 }

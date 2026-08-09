@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 from ..models import AgentResult, AgentStep, EmailChannelConfig, JsonDict, Tool, to_jsonable
-from ..react import AgentContext, ReActAgent
+from ..react import AgentContext, FunctionCallingAgent
 
 
 SMTP_PROVIDERS = {
@@ -23,15 +23,68 @@ SMTP_PROVIDERS = {
 
 
 @dataclass
-class ChannelConfigAgent(ReActAgent):
+class ChannelConfigAgent(FunctionCallingAgent):
     name = "channel_config"
 
     def tools(self, context: AgentContext) -> Dict[str, Tool]:
         return {
-            "channel.infer_email": Tool("channel.infer_email", "Infer SMTP config from email address.", lambda payload: self._infer(context, payload)),
-            "channel.save": Tool("channel.save", "Save or dry-run save channel config.", lambda payload: self._save(context, payload)),
-            "channel.test": Tool("channel.test", "Test email channel config.", lambda payload: self._test(context, payload)),
+            "channel.infer_email": Tool(
+                "channel.infer_email",
+                "Infer SMTP config from an email address. Returns the platform channel payload with mailHost/mailPort/mailUsername from the address domain.",
+                lambda payload: self._infer(context, payload),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "email": {"type": "string", "description": "Email address, e.g. ops@example.com. May be omitted when present in the user text."},
+                        "configName": {"type": "string", "description": "Channel config name. Defaults to mail-<domain>."},
+                        "mailHost": {"type": "string", "description": "SMTP host override. Inferred from the address domain when omitted."},
+                        "mailPort": {"type": "integer", "description": "SMTP port override. Inferred from the address domain when omitted."},
+                        "mailUsername": {"type": "string", "description": "SMTP username. Defaults to the email address."},
+                        "mailPwd": {"type": "string", "description": "SMTP password or authorization code."},
+                        "smtpSSL": {"type": "boolean", "description": "Use SSL. Inferred from the address domain when omitted."},
+                        "smtpTLS": {"type": "boolean", "description": "Use STARTTLS. Inferred from the address domain when omitted."},
+                        "verifyUser": {"type": "string", "description": "Recipient used to verify the channel. Defaults to the email address."},
+                    },
+                    "required": [],
+                },
+            ),
+            "channel.save": Tool(
+                "channel.save",
+                "Save or dry-run save the email channel config to the message platform.",
+                lambda payload: self._save(context, payload),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "configName": {"type": "string", "description": "Channel config name."},
+                        "defaultStatus": {"type": "integer", "description": "1 to enable by default, 0 otherwise."},
+                        "sysId": {"type": "string", "description": "System id. Defaults to diwork."},
+                        "tenantId": {"type": "string", "description": "Tenant id."},
+                    },
+                    "required": [],
+                },
+            ),
+            "channel.test": Tool(
+                "channel.test",
+                "Test the email channel config by sending a verification message.",
+                lambda payload: self._test(context, payload),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "verifyUser": {"type": "string", "description": "Recipient email that receives the verification message."},
+                    },
+                    "required": [],
+                },
+            ),
         }
+
+    def system_prompt_for(self, context: AgentContext) -> str:
+        return (
+            "你是企业消息平台的邮件通道配置 agent。"
+            "配置邮件通道的流程：先用 channel.infer_email 从邮箱地址推断 SMTP 配置并生成通道 payload，"
+            "再用 channel.save 保存配置，最后用 channel.test 发送验证消息测试通道。"
+            "邮箱地址优先从用户输入提取；用户没有给出邮箱时必须报告缺失（missingSlots），不得编造邮箱。"
+            "不要编造 SMTP 主机、端口、密码或验证结果；推断和保存结果以工具返回为准。"
+        )
 
     def plan(self, context: AgentContext) -> List[JsonDict]:
         payload = _channel_payload(context)

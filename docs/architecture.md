@@ -164,7 +164,7 @@ classDiagram
     execute(workflow, selected_agents, context) list
   }
   class AgentRegistry
-  class ReActAgent {
+  class RuleBasedAgent {
     <<interface>>
     tools(context) dict
     plan(context) list
@@ -200,7 +200,7 @@ classDiagram
   DecisionEngine --> WorkflowRegistry
   WorkflowExecutor --> WorkflowRegistry
   WorkflowExecutor --> AgentRegistry
-  ReActAgent --> ToolRegistry
+  RuleBasedAgent --> ToolRegistry
   ToolRegistry --> PermissionPolicy
   RagService --> Retriever
   RagService --> Reranker
@@ -262,7 +262,7 @@ Workflow 来源：
 
 新增 Agent 的推荐步骤：
 
-1. 实现 `ReActAgent` 子类。
+1. 实现 `RuleBasedAgent` 子类。
 2. 在组合根或插件加载器里注册 `AgentSpec` 和 factory。
 3. 在 `config/workflows.yaml` 中引用该 Agent。
 4. 让 classifier 或 policy route 到对应 workflow。
@@ -408,7 +408,7 @@ kubectl apply -f deploy/kubernetes/message-platform-helper.yaml
 | Phase 1 | Done | 核心契约、AgentRegistry、ToolRegistry |
 | Phase 2 | Done | IntentClassifier、DecisionEngine、KnowledgePolicy、Router |
 | Phase 3 | Done | WorkflowRegistry、WorkflowExecutor |
-| Phase 4 | Done | ToolRegistry 接入 ReAct 执行路径与权限检查入口 |
+| Phase 4 | Done | ToolRegistry 接入规则执行路径与权限检查入口 |
 | Phase 5 | Done | RAG 管线拆分 |
 | Phase 6 | Done | FastAPI 可选入口、Streaming 事件、Trace/Metrics |
 | Phase 7 | Done | 配置化、Docker、Kubernetes 基础资产 |

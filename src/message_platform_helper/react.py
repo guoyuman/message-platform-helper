@@ -12,11 +12,13 @@ failing recovery cannot loop forever.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from .application.security import TenantContext
-from .llm import LLMClient
+from .llm import LLMClient, OpenAICompatibleLLMClient
 from .models import AgentResult, AgentStep, AssistantRequest, ConversationMemory, JsonDict, KnowledgeChunk, Tool
 from .platform import PlatformGateway
 from .tools import ToolRegistry
@@ -33,9 +35,12 @@ class AgentContext:
     rag_service: Any | None = None
     tenant_context: TenantContext | None = None
     scratch: JsonDict = field(default_factory=dict)
+    # Live step callback for streaming observability: invoked with every
+    # AgentStep as it is produced, before the run completes.
+    on_step: Any | None = None
 
 
-class ReActAgent:
+class RuleBasedAgent:
     name = "base"
 
     # Hard cap on executed steps per run. Defaults to ``2 * len(plan) + 1``
@@ -108,6 +113,8 @@ class ReActAgent:
                         data=step_data,
                     )
                 )
+                if context.on_step is not None:
+                    context.on_step(steps[-1])
             return self.finalize(context, observations, steps)
         except Exception as exc:
             steps.append(
@@ -119,6 +126,8 @@ class ReActAgent:
                     status="error",
                 )
             )
+            if context.on_step is not None:
+                context.on_step(steps[-1])
             return AgentResult(
                 agent=self.name,
                 ok=False,
@@ -134,3 +143,143 @@ class ReActAgent:
             context.tool_registry.register_tool(tool, replace_existing=True)
         registry_tools = {tool.name: tool for tool in context.tool_registry.resolve(context.tool_registry.names())}
         return {**local_tools, **registry_tools}
+
+
+class FunctionCallingAgent(RuleBasedAgent):
+    """RuleBasedAgent variant driven by native LLM tool calls instead of a rule plan.
+
+    ``run()`` hands the available tools (as OpenAI function schemas) to the
+    model, executes each ``tool_calls`` the model returns, feeds the
+    observations back as ``tool`` messages, and repeats until the model
+    answers without calling a tool. Every executed call is recorded as an
+    ``AgentStep`` audit record, and tool errors are returned to the model as
+    observations (standard function-calling recovery) rather than aborting
+    the run. Requires an online provider that implements ``complete_chat``;
+    falls back to the rule-based ``plan()`` otherwise.
+    """
+
+    def system_prompt_for(self, context: AgentContext) -> str:
+        return (
+            "You are an enterprise message platform assistant. "
+            "Call the available tools when you need data or need to perform an action; "
+            "otherwise answer the user directly. Do not invent tool outputs."
+        )
+
+    def run(self, context: AgentContext) -> AgentResult:
+        if not isinstance(context.llm, OpenAICompatibleLLMClient):
+            return super().run(context)
+        tools = self._available_tools(context)
+        tool_names = {_openai_tool_name(name): name for name in tools}
+        schemas = [_openai_tool_schema(tools[name], function_name=function_name) for function_name, name in tool_names.items()]
+        messages: List[JsonDict] = [
+            {"role": "system", "content": self.system_prompt_for(context)},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {"text": context.request.text, "payload": context.request.payload},
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        steps: List[AgentStep] = []
+        issues: List[JsonDict] = []
+        cap = self.max_steps if self.max_steps is not None else 10
+        try:
+            while len(steps) < cap:
+                message = context.llm.complete_chat(messages, tools=schemas or None)
+                tool_calls = message.get("tool_calls") or []
+                if not tool_calls:
+                    ok = not any(issue.get("severity") == "error" for issue in issues)
+                    return AgentResult(
+                        agent=self.name,
+                        ok=ok,
+                        output={"answer": message.get("content") or ""},
+                        issues=issues,
+                        steps=steps,
+                    )
+                messages.append(
+                    {"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls}
+                )
+                for call in tool_calls:
+                    function = call.get("function") or {}
+                    function_name = str(function.get("name") or "")
+                    name = tool_names.get(function_name, function_name)
+                    try:
+                        arguments = json.loads(str(function.get("arguments") or "{}"))
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    if not isinstance(arguments, dict):
+                        arguments = {}
+                    tool = tools.get(name)
+                    if tool is None:
+                        observation: JsonDict = {"ok": False, "error": f"Unknown tool {name!r}."}
+                    else:
+                        try:
+                            if context.tool_registry is not None:
+                                context.tool_registry.authorize(name, context.tenant_context)
+                            observation = tool.run(arguments, context)
+                        except Exception as exc:
+                            observation = {"ok": False, "error": str(exc)}
+                    if not observation.get("ok", True):
+                        issues.extend(observation.get("issues") or [{"code": f"{self.name}.tool_error", "message": str(observation.get("error") or "tool error"), "severity": "error"}])
+                    steps.append(
+                        AgentStep(
+                            agent=self.name,
+                            thought=str(function.get("arguments") or ""),
+                            action=name,
+                            observation=str(
+                                observation.get("summary") or observation.get("status") or observation.get("error") or "ok"
+                            ),
+                            status="ok" if observation.get("ok", True) else "error",
+                            data=dict(observation),
+                        )
+                    )
+                    if context.on_step is not None:
+                        context.on_step(steps[-1])
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id") or ""),
+                            "content": json.dumps(observation, ensure_ascii=False),
+                        }
+                    )
+            return AgentResult(
+                agent=self.name,
+                ok=True,
+                output={"answer": "Reached the maximum number of tool rounds."},
+                issues=issues,
+                steps=steps,
+            )
+        except Exception as exc:
+            steps.append(
+                AgentStep(
+                    agent=self.name,
+                    thought="Function calling stopped because of an exception.",
+                    action="error",
+                    observation=str(exc),
+                    status="error",
+                )
+            )
+            if context.on_step is not None:
+                context.on_step(steps[-1])
+            return AgentResult(
+                agent=self.name,
+                ok=False,
+                issues=[{"code": f"{self.name}.error", "message": str(exc), "severity": "error"}],
+                steps=steps,
+            )
+
+
+def _openai_tool_name(name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", name).strip("_") or "tool"
+
+
+def _openai_tool_schema(tool: Tool, function_name: str | None = None) -> JsonDict:
+    return {
+        "type": "function",
+        "function": {
+            "name": function_name or _openai_tool_name(tool.name),
+            "description": tool.description,
+            "parameters": tool.parameters or {"type": "object", "properties": {}},
+        },
+    }
