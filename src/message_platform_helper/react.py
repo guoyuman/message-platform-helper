@@ -24,6 +24,15 @@ from .platform import PlatformGateway
 from .tools import ToolRegistry
 
 
+TODO_STATUSES = {"pending", "in_progress", "completed"}
+TODO_REMINDER_AFTER_ROUNDS = 3
+TODO_REMINDER = (
+    "Reminder: you have gone 3 tool rounds without calling todo_write. "
+    "For this multi-step task, update the plan now: keep completed items completed, "
+    "mark the current item in_progress, and leave future items pending."
+)
+
+
 @dataclass
 class AgentContext:
     request: AssistantRequest
@@ -169,10 +178,13 @@ class FunctionCallingAgent(RuleBasedAgent):
         if not isinstance(context.llm, OpenAICompatibleLLMClient):
             return super().run(context)
         tools = self._available_tools(context)
+        # Keep this planning tool local and authoritative; a registry entry
+        # must not turn todo_write into an executable business capability.
+        tools["todo_write"] = _todo_write_tool(context)
         tool_names = {_openai_tool_name(name): name for name in tools}
         schemas = [_openai_tool_schema(tools[name], function_name=function_name) for function_name, name in tool_names.items()]
         messages: List[JsonDict] = [
-            {"role": "system", "content": self.system_prompt_for(context)},
+            {"role": "system", "content": _with_todo_prompt(self.system_prompt_for(context))},
             {
                 "role": "user",
                 "content": json.dumps(
@@ -184,8 +196,12 @@ class FunctionCallingAgent(RuleBasedAgent):
         steps: List[AgentStep] = []
         issues: List[JsonDict] = []
         cap = self.max_steps if self.max_steps is not None else 10
+        rounds_without_todo = 0
         try:
             while len(steps) < cap:
+                if rounds_without_todo >= TODO_REMINDER_AFTER_ROUNDS:
+                    messages.append({"role": "system", "content": TODO_REMINDER})
+                    rounds_without_todo = 0
                 message = context.llm.complete_chat(messages, tools=schemas or None)
                 tool_calls = message.get("tool_calls") or []
                 if not tool_calls:
@@ -200,10 +216,12 @@ class FunctionCallingAgent(RuleBasedAgent):
                 messages.append(
                     {"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls}
                 )
+                called_todo = False
                 for call in tool_calls:
                     function = call.get("function") or {}
                     function_name = str(function.get("name") or "")
                     name = tool_names.get(function_name, function_name)
+                    called_todo = called_todo or name == "todo_write"
                     try:
                         arguments = json.loads(str(function.get("arguments") or "{}"))
                     except json.JSONDecodeError:
@@ -215,7 +233,7 @@ class FunctionCallingAgent(RuleBasedAgent):
                         observation: JsonDict = {"ok": False, "error": f"Unknown tool {name!r}."}
                     else:
                         try:
-                            if context.tool_registry is not None:
+                            if name != "todo_write" and context.tool_registry is not None:
                                 context.tool_registry.authorize(name, context.tenant_context)
                             observation = tool.run(arguments, context)
                         except Exception as exc:
@@ -243,6 +261,7 @@ class FunctionCallingAgent(RuleBasedAgent):
                             "content": json.dumps(observation, ensure_ascii=False),
                         }
                     )
+                rounds_without_todo = 0 if called_todo else rounds_without_todo + 1
             return AgentResult(
                 agent=self.name,
                 ok=True,
@@ -283,3 +302,82 @@ def _openai_tool_schema(tool: Tool, function_name: str | None = None) -> JsonDic
             "parameters": tool.parameters or {"type": "object", "properties": {}},
         },
     }
+
+
+def _with_todo_prompt(system_prompt: str) -> str:
+    return (
+        f"{system_prompt}\n\n"
+        "Planning protocol: todo_write is a planning-only scratchpad and does not execute actions. "
+        "For a task requiring multiple tool calls, first call todo_write with every step and status "
+        "pending. Before doing a step, update it to in_progress; after it succeeds, update it to "
+        "completed; then continue with the next pending step. Keep the todo list current."
+    )
+
+
+def _todo_write_tool(context: AgentContext) -> Tool:
+    return Tool(
+        name="todo_write",
+        description=(
+            "Create or update the current task plan. This only records planning state; "
+            "it does not execute any business action."
+        ),
+        handler=lambda payload: _write_todos(context, payload),
+        parameters={
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "description": "The complete current task plan, replacing the previous list.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "description": "Stable todo identifier."},
+                            "content": {"type": "string", "description": "The step to complete."},
+                            "activeForm": {
+                                "type": "string",
+                                "description": "Present-tense label for the step while it is in progress.",
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed"],
+                            },
+                        },
+                        "required": ["content", "status"],
+                    },
+                }
+            },
+            "required": ["todos"],
+        },
+    )
+
+
+def _write_todos(context: AgentContext, payload: JsonDict) -> JsonDict:
+    raw_todos = payload.get("todos")
+    if not isinstance(raw_todos, list):
+        return {"ok": False, "summary": "todos must be a list", "error": "todos must be a list"}
+
+    todos: List[JsonDict] = []
+    for index, raw_todo in enumerate(raw_todos, start=1):
+        if not isinstance(raw_todo, dict):
+            return {"ok": False, "summary": "invalid todo item", "error": f"todo {index} must be an object"}
+        content = str(raw_todo.get("content") or "").strip()
+        status = str(raw_todo.get("status") or "").strip()
+        if not content:
+            return {"ok": False, "summary": "todo content is required", "error": f"todo {index} has no content"}
+        if status not in TODO_STATUSES:
+            return {
+                "ok": False,
+                "summary": "invalid todo status",
+                "error": f"todo {index} status must be one of {sorted(TODO_STATUSES)}",
+            }
+        todos.append(
+            {
+                "id": str(raw_todo.get("id") or index),
+                "content": content,
+                "activeForm": str(raw_todo.get("activeForm") or content),
+                "status": status,
+            }
+        )
+
+    context.scratch["todos"] = todos
+    return {"ok": True, "summary": f"todo list updated ({len(todos)} item(s))", "todos": todos}
