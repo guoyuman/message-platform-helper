@@ -5,7 +5,14 @@ import unittest
 from pathlib import Path
 from zipfile import ZipFile
 
-from message_platform_helper.rag import Document, DocumentMetadata, DocumentSection, MarkdownChunkStrategy, ParentChildChunkStrategy
+from message_platform_helper.rag import (
+    Document,
+    DocumentMetadata,
+    DocumentSection,
+    MarkdownChunkStrategy,
+    ParentChildChunkStrategy,
+    RecursiveChunkStrategy,
+)
 from message_platform_helper.rag import MarkdownLoader, MarkdownParser
 from message_platform_helper.rag.loader.docx_loader import read_docx_text
 from message_platform_helper.rag.parser.docx_parser import DocxParser
@@ -57,7 +64,7 @@ class RagIngestionPipelineTests(unittest.TestCase):
             path.write_text("# Mail\n\nIntro.\n\n## Troubleshooting\n\nCheck logs.", encoding="utf-8")
             kb = InMemoryKnowledgeBase()
 
-            chunks = kb.ingest_file(path, tags=["mail"], strategy=MarkdownChunkStrategy())
+            chunks = kb.ingest_file(path, tags=["mail"], strategy=MarkdownChunkStrategy(embedding_fn=_topic_embedding))
 
         self.assertEqual(len(chunks), 2)
         self.assertEqual(kb.count(), 2)
@@ -75,6 +82,107 @@ class RagIngestionPipelineTests(unittest.TestCase):
 
         self.assertEqual([chunk.title for chunk in chunks], ["Mail", "Mail", "Troubleshooting"])
         self.assertEqual([chunk.content for chunk in chunks], ["Intro one.", "Intro two.", "Check logs."])
+
+    def test_recursive_chunker_keeps_plain_paragraph_under_limit(self) -> None:
+        chunks = _chunk_text("普通段落内容。", chunk_size=20, max_chunk_size=20)
+
+        self.assertEqual([chunk.content for chunk in chunks], ["普通段落内容。"])
+
+    def test_recursive_chunker_semantically_merges_related_candidate_paragraphs(self) -> None:
+        chunks = _chunk_text(
+            "MySQL supports replication.\n\nMySQL replicas handle reads.",
+            chunk_size=80,
+            max_chunk_size=80,
+            embedding_fn=_topic_embedding,
+        )
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("replication.\n\nMySQL replicas", chunks[0].content)
+
+    def test_recursive_chunker_keeps_unrelated_candidate_paragraphs_separate(self) -> None:
+        chunks = _chunk_text(
+            "MySQL supports replication.\n\nInvoice templates render email content.",
+            chunk_size=80,
+            max_chunk_size=80,
+            embedding_fn=_topic_embedding,
+        )
+
+        self.assertEqual([chunk.content for chunk in chunks], ["MySQL supports replication.", "Invoice templates render email content."])
+
+    def test_recursive_chunker_splits_long_sentence_without_period(self) -> None:
+        chunks = _chunk_text("超长句子" * 30, chunk_size=25, max_chunk_size=25)
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk.content) <= 25 for chunk in chunks))
+
+    def test_recursive_chunker_prefers_semicolon_before_lower_priority_splits(self) -> None:
+        chunks = _chunk_text("alpha beta gamma;delta epsilon zeta;theta iota kappa", chunk_size=22, max_chunk_size=22)
+
+        self.assertEqual([chunk.content for chunk in chunks], ["alpha beta gamma;", "delta epsilon zeta;", "theta iota kappa"])
+
+    def test_recursive_chunker_falls_back_to_comma(self) -> None:
+        chunks = _chunk_text("alpha beta gamma,delta epsilon zeta,theta iota kappa", chunk_size=22, max_chunk_size=22)
+
+        self.assertEqual([chunk.content for chunk in chunks], ["alpha beta gamma,", "delta epsilon zeta,", "theta iota kappa"])
+
+    def test_recursive_chunker_hard_splits_text_without_separators(self) -> None:
+        chunks = _chunk_text("x" * 53, chunk_size=20, max_chunk_size=20)
+
+        self.assertEqual([len(chunk.content) for chunk in chunks], [20, 20, 13])
+
+    def test_recursive_chunker_does_not_split_images(self) -> None:
+        document = Document(id="doc-image", title="Image", content="", metadata=DocumentMetadata(format="pdf"))
+        section = DocumentSection(title="Image", level=1, kind="image", content="[Image 1.1: page=1, size=20x30]")
+
+        chunks = RecursiveChunkStrategy(chunk_size=10, max_chunk_size=10).chunk(document, [section])
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].content, section.content)
+
+    def test_recursive_chunker_ignores_accidental_blank_line_when_semantically_related(self) -> None:
+        chunks = _chunk_text(
+            "MySQL 支持主从复制。\n\n主库负责写入，从库负责读取。",
+            chunk_size=60,
+            max_chunk_size=60,
+            embedding_fn=_topic_embedding,
+        )
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("\n\n", chunks[0].content)
+
+    def test_recursive_chunker_does_not_merge_across_headings(self) -> None:
+        document = Document(
+            id="doc-heading",
+            title="Guide",
+            content="",
+            metadata=DocumentMetadata(format="markdown"),
+        )
+        sections = [
+            DocumentSection(title="数据库配置", level=2, kind="paragraph", content="MySQL supports replication."),
+            DocumentSection(title="模板配置", level=2, kind="paragraph", content="MySQL replicas handle reads."),
+        ]
+
+        chunks = RecursiveChunkStrategy(chunk_size=80, max_chunk_size=80, embedding_fn=_topic_embedding).chunk(document, sections)
+
+        self.assertEqual([chunk.title for chunk in chunks], ["数据库配置", "模板配置"])
+
+    def test_recursive_chunker_respects_max_size_even_when_similarity_is_high(self) -> None:
+        chunks = _chunk_text(
+            "MySQL " + ("replication " * 6) + "\n\nMySQL " + ("replica " * 6),
+            chunk_size=50,
+            max_chunk_size=50,
+            embedding_fn=_topic_embedding,
+        )
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk.content) <= 50 for chunk in chunks))
+
+    def test_recursive_chunker_adds_bounded_overlap(self) -> None:
+        chunks = _chunk_text("First sentence. Second sentence. Third sentence.", chunk_size=20, max_chunk_size=36, chunk_overlap=16)
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(chunks[1].content.startswith("Second sentence."))
+        self.assertTrue(all(len(chunk.content) <= 36 for chunk in chunks))
 
     def test_xlsx_loader_extracts_sheet_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -136,7 +244,8 @@ class RagIngestionPipelineTests(unittest.TestCase):
 
         self.assertEqual([section.kind for section in sections], ["paragraph", "table", "image"])
         self.assertEqual(sections[1].metadata["page"], 2)
-        self.assertEqual(sections[2].title, "Guide Page 2 Image 2.1")
+        self.assertEqual(sections[0].title, "Guide")
+        self.assertEqual(sections[2].title, "Guide Image 2.1")
 
     def test_docx_loader_preserves_paragraph_table_and_image_markers_in_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -174,6 +283,33 @@ def _write_mixed_docx(path: Path) -> None:
     paragraph = document.add_paragraph()
     paragraph.add_run().add_picture(str(image_path))
     document.save(path)
+
+
+def _chunk_text(
+    text: str,
+    *,
+    chunk_size: int,
+    max_chunk_size: int,
+    chunk_overlap: int = 0,
+    embedding_fn=None,
+):
+    document = Document(id="doc-text", title="Text", content=text, metadata=DocumentMetadata(format="text"))
+    return RecursiveChunkStrategy(
+        chunk_size=chunk_size,
+        max_chunk_size=max_chunk_size,
+        chunk_overlap=chunk_overlap,
+        embedding_fn=embedding_fn,
+    ).chunk(document, [])
+
+
+def _topic_embedding(paragraphs: list[str]) -> list[list[float]]:
+    vectors: list[list[float]] = []
+    for paragraph in paragraphs:
+        if "mysql" in paragraph.lower() or "MySQL" in paragraph or "主" in paragraph or "从" in paragraph:
+            vectors.append([1.0, 0.0])
+        else:
+            vectors.append([0.0, 1.0])
+    return vectors
 
 
 if __name__ == "__main__":
