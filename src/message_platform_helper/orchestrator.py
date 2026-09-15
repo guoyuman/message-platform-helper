@@ -13,7 +13,14 @@ from .config import ConfigCatalog, Settings, load_platform_config, load_settings
 from .application.security import TenantContext, permission_policy_from_config
 from .decision import DecisionEngine, build_default_decision_engine, to_reasoning_decision
 from .decision import KnowledgePolicy, WorkflowRouter
-from .infrastructure.observability import RequestMetrics, TraceContext, elapsed_ms, log_request_completed
+from .infrastructure.observability import (
+    RequestMetrics,
+    TraceContext,
+    elapsed_ms,
+    get_observer,
+    log_request_completed,
+    update_observation,
+)
 from .llm import LLMClient, build_llm, describe_llm
 from .memory import MemoryManager, build_memory_store, memory_from_dict
 from .models import AgentResult, AssistantRequest, HelperResponse, JsonDict, KnowledgeChunk, deep_merge, to_jsonable
@@ -88,7 +95,10 @@ class MessagePlatformHelper:
         database_url = settings.rag_database_url or _rag_database_url()
         llm = build_llm(settings)
         memory_store = build_memory_store(database_url, settings.redis_url)
-        embedding_provider = build_embedding_provider()
+        from .config import load_rag_config
+
+        rag_config = load_rag_config(settings.config_dir)
+        embedding_provider = build_embedding_provider(rag_config)
         kb = _build_knowledge_base(database_url, embedding_provider)
         platform = PlatformGateway(
             platform_base_url=settings.platform_base_url,
@@ -97,7 +107,7 @@ class MessagePlatformHelper:
         )
         counter_store = build_counter_store(database_url, settings.redis_url)
         config_catalog = load_platform_config(settings.config_dir)
-        rag_service = _build_rag_service(kb)
+        rag_service = _build_rag_service(kb, rag_config)
         return cls(
             settings=settings,
             llm=llm,
@@ -111,6 +121,54 @@ class MessagePlatformHelper:
 
     def handle(self, request: AssistantRequest, on_step=None) -> HelperResponse:
         trace = TraceContext.from_request(request)
+        observer = get_observer()
+        with observer.propagate(trace, request), observer.start_request(trace, request) as observation:
+            try:
+                response = self._handle(request, on_step=on_step, trace=trace)
+            except Exception as exc:
+                update_observation(
+                    observation,
+                    level="ERROR",
+                    status_message=str(exc),
+                    metadata={"error_type": type(exc).__name__},
+                )
+                observer.score_current_trace(
+                    "task_success",
+                    0.0,
+                    data_type="NUMERIC",
+                    comment="Request raised an exception before a HelperResponse was produced.",
+                )
+                observer.flush()
+                raise
+            update_observation(
+                observation,
+                output={
+                    "ok": response.ok,
+                    "trace_id": response.trace_id,
+                    "request_id": response.request_id,
+                    "results": [{"agent": result.agent, "ok": result.ok} for result in response.results],
+                },
+                metadata={
+                    "intent": response.decision.intent,
+                    "workflow": response.decision.workflow,
+                    "selected_agents": response.decision.selected_agents,
+                    "retrieved_chunks": len(response.retrieved),
+                    "metrics": response.metrics,
+                },
+                level="DEFAULT" if response.ok else "ERROR",
+            )
+            observer.score_current_trace(
+                "task_success",
+                1.0 if response.ok else 0.0,
+                data_type="NUMERIC",
+                comment="1 when all selected agents completed without error-level issues.",
+            )
+            observer.score_current_trace("request_latency_ms", response.metrics.get("latency_ms", 0.0), data_type="NUMERIC")
+            observer.flush()
+            return response
+
+    def _handle(self, request: AssistantRequest, on_step=None, trace: TraceContext | None = None) -> HelperResponse:
+        trace = trace or TraceContext.from_request(request)
         tenant_context = TenantContext.from_request(request)
         metrics = RequestMetrics()
         storage_session_id = _tenant_scoped_session_id(request.tenant_id, request.session_id)
@@ -217,6 +275,7 @@ class MessagePlatformHelper:
         tenant_context: TenantContext,
         metrics: RequestMetrics,
     ) -> tuple[List[AgentResult], List[KnowledgeChunk]]:
+        from contextvars import copy_context
         from concurrent.futures import ThreadPoolExecutor
 
         retrieved: List[KnowledgeChunk] = []
@@ -280,7 +339,10 @@ class MessagePlatformHelper:
                 results.extend(run_task(task_context, task))
             return results, retrieved
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [pool.submit(run_task, task_context, task) for task, task_context in prepared]
+            futures = [
+                pool.submit(copy_context().run, run_task, task_context, task)
+                for task, task_context in prepared
+            ]
             for future in futures:
                 results.extend(future.result())
         return results, retrieved
@@ -356,6 +418,7 @@ class MessagePlatformHelper:
             "ok": True,
             "service": "message-platform-helper",
             "llm": describe_llm(self.llm, self.settings),
+            "observability": get_observer().status(),
             "dataDir": str(self.settings.data_dir),
             "configDir": str(self.settings.config_dir) if self.settings.config_dir else "",
             "database": {"type": "postgresql", "urlConfigured": bool(self.knowledge_base.database_url)},
@@ -459,7 +522,7 @@ def _build_knowledge_base(database_url: str, embedding_provider) -> object:
     return kb
 
 
-def _build_rag_service(knowledge_base: object) -> object:
+def _build_rag_service(knowledge_base: object, rag_config: dict | None = None) -> object:
     database_url = str(getattr(knowledge_base, "database_url", "") or "")
     embedding_provider = getattr(knowledge_base, "embedding_provider", None)
     if not database_url or not _has_sqlalchemy():
@@ -468,7 +531,7 @@ def _build_rag_service(knowledge_base: object) -> object:
     from .rag.db import build_session_factory
 
     session = build_session_factory(database_url)()
-    return build_postgres_rag_service(session, embedding_provider)
+    return build_postgres_rag_service(session, embedding_provider, config=rag_config)
 
 
 def _chat_system_prompt(memory) -> str:

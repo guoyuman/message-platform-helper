@@ -2,6 +2,7 @@ README.md
 pyproject.toml
 src/message_platform_helper/__init__.py
 src/message_platform_helper/config.py
+src/message_platform_helper/evaluation.py
 src/message_platform_helper/llm.py
 src/message_platform_helper/memory.py
 src/message_platform_helper/models.py
@@ -47,6 +48,7 @@ src/message_platform_helper/rag/query_analyzer.py
 src/message_platform_helper/rag/reranker.py
 src/message_platform_helper/rag/retriever.py
 src/message_platform_helper/rag/service.py
+src/message_platform_helper/rag/vision.py
 src/message_platform_helper/rag/chunker/__init__.py
 src/message_platform_helper/rag/chunker/base.py
 src/message_platform_helper/rag/chunker/markdown.py
@@ -70,6 +72,7 @@ src/message_platform_helper/rag/ingestion/loader/docx_loader.py
 src/message_platform_helper/rag/ingestion/loader/markdown_loader.py
 src/message_platform_helper/rag/ingestion/loader/pdf_loader.py
 src/message_platform_helper/rag/ingestion/loader/txt_loader.py
+src/message_platform_helper/rag/ingestion/loader/xlsx_loader.py
 src/message_platform_helper/rag/ingestion/parser/__init__.py
 src/message_platform_helper/rag/ingestion/parser/base.py
 src/message_platform_helper/rag/ingestion/parser/docx_parser.py
@@ -81,6 +84,7 @@ src/message_platform_helper/rag/loader/docx_loader.py
 src/message_platform_helper/rag/loader/markdown_loader.py
 src/message_platform_helper/rag/loader/pdf_loader.py
 src/message_platform_helper/rag/loader/text_loader.py
+src/message_platform_helper/rag/loader/xlsx_loader.py
 src/message_platform_helper/rag/parser/__init__.py
 src/message_platform_helper/rag/parser/base.py
 src/message_platform_helper/rag/parser/docx_parser.py
@@ -106,11 +110,16 @@ tests/test_agents.py
 tests/test_application_streaming_observability.py
 tests/test_config_deployment.py
 tests/test_decision_workflow.py
+tests/test_evaluation.py
 tests/test_frontend_assets.py
+tests/test_function_calling.py
+tests/test_memory_v2.py
 tests/test_orchestrator.py
 tests/test_rag_db_models.py
 tests/test_rag_hybrid_pipeline.py
+tests/test_rag_image_enrichment.py
 tests/test_rag_ingestion_pipeline.py
 tests/test_rag_migrations.py
+tests/test_react_replan.py
 tests/test_reasoning_rag_memory.py
 tests/test_registries.py

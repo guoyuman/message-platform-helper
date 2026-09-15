@@ -64,6 +64,7 @@ class ConversationMemory:
     profile: UserProfile = field(default_factory=UserProfile)
     summary: str = ""
     facts: JsonDict = field(default_factory=dict)
+    operation_history: List[JsonDict] = field(default_factory=list)
     recent_messages: List[JsonDict] = field(default_factory=list)
     updated_at: float = field(default_factory=now_ts)
 
@@ -76,6 +77,7 @@ class KnowledgeChunk:
     source: str = "manual"
     tags: List[str] = field(default_factory=list)
     score: float = 0.0
+    metadata: JsonDict = field(default_factory=dict)
 
 
 @dataclass

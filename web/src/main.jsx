@@ -471,6 +471,12 @@ function ThinkingLine({ stage }) {
   );
 }
 
+function ThinkingMessage({ stage }) {
+  return <ThinkingLine stage={stage} />;
+}
+
+const ThinkingMessageAlias = ThinkingMessage;
+
 function TraceItem({ item }) {
   const [expanded, setExpanded] = useState(false);
   const detail = [item.text].filter(Boolean).join("\n");

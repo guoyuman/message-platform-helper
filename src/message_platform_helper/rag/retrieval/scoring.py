@@ -66,6 +66,8 @@ def _bounded_scores(chunks: list[KnowledgeChunk]) -> dict[str, float]:
 
 
 def _with_score(chunk: KnowledgeChunk, score: float) -> KnowledgeChunk:
+    metadata = dict(chunk.metadata)
+    metadata["retrieval_score"] = score
     return KnowledgeChunk(
         id=chunk.id,
         title=chunk.title,
@@ -73,6 +75,7 @@ def _with_score(chunk: KnowledgeChunk, score: float) -> KnowledgeChunk:
         source=chunk.source,
         tags=list(chunk.tags),
         score=score,
+        metadata=metadata,
     )
 
 

@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 import requests
 
 from .config import Settings
+from .infrastructure.observability import start_generation, update_observation
 
 
 JsonDict = Dict[str, Any]
@@ -256,9 +257,9 @@ class LLMClient:
         return self.complete_json(
             (
                 "Consolidate enterprise conversation memory. Deduplicate repeated facts, "
-                "resolve contradictions by keeping the latest current fact, remove obsolete low-value memory, "
-                "and keep a concise operationHistory. "
-                "请保留对后续消息平台任务有用的事实，删除重复、过期和低价值内容。Return JSON with summary and facts."
+                "identify semantic conflicts, and propose memory changes without replacing memory directly. "
+                "Return JSON with summary, upserts, superseded, deleted, and warnings. "
+                "Do not return full facts or operationHistory; Python validates and applies the proposal."
             ),
             {"memory": memory},
         )
@@ -479,20 +480,27 @@ class RuleBasedLLMClient(LLMClient):
 
     def _consolidate_memory(self, memory: JsonDict) -> JsonDict:
         facts = dict(memory.get("facts") or {})
-        history = list(facts.get("operationHistory") or [])
-        consolidated_history = _dedupe_operations(history)[-20:]
-        facts = _dedupe_fact_lists(facts)
-        if consolidated_history:
-            facts["operationHistory"] = consolidated_history
-        else:
-            facts.pop("operationHistory", None)
-        facts["memoryMeta"] = {
-            "consolidated": True,
-            "operationHistoryCount": len(consolidated_history),
-        }
+        upserts = []
+        for item in facts.get("factRecords") or []:
+            if isinstance(item, dict) and item.get("status", "active") == "active":
+                upserts.append(
+                    {
+                        "key": item.get("key"),
+                        "value": item.get("value"),
+                        "source": item.get("source") or "inferred",
+                        "confidence": min(float(item.get("confidence") or 0.5), 0.7) if item.get("source") == "inferred" else float(item.get("confidence") or 1.0),
+                    }
+                )
+        for key, value in _dedupe_fact_lists(facts).items():
+            if key in {"operationHistory", "memoryMeta", "factRecords"}:
+                continue
+            upserts.append({"key": key, "value": value, "source": "inferred", "confidence": 0.6})
         return {
             "summary": str(memory.get("summary") or "")[-800:],
-            "facts": facts,
+            "upserts": upserts,
+            "superseded": [],
+            "deleted": [],
+            "warnings": [],
         }
 
     def _classify_request_type(self, signals: JsonDict, payload: JsonDict) -> str:
@@ -744,20 +752,29 @@ class OpenAICompatibleLLMClient(LLMClient):
         }
         if self.response_format:
             body["response_format"] = {"type": self.response_format}
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                json=body,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=150,
-            )
-            response.raise_for_status()
-            result = response.json()
-        except requests.Timeout as exc:
-            raise TimeoutError(f"LLM request timed out after 150s: model={self.model}, base_url={self.base_url}") from exc
-        except requests.RequestException as exc:
-            raise _llm_request_error(self.model, self.base_url, exc) from exc
-        return json.loads(result["choices"][0]["message"]["content"])
+        with start_generation(
+            "llm.complete_json",
+            model=self.model,
+            input={"system": system, "payload": payload},
+            metadata={"provider": "openai_compatible", "base_url": self.base_url, "response_format": self.response_format},
+            model_parameters={"temperature": self.temperature},
+        ) as observation:
+            try:
+                response = requests.post(
+                    f"{self.base_url}/chat/completions",
+                    json=body,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=150,
+                )
+                response.raise_for_status()
+                result = response.json()
+            except requests.Timeout as exc:
+                raise TimeoutError(f"LLM request timed out after 150s: model={self.model}, base_url={self.base_url}") from exc
+            except requests.RequestException as exc:
+                raise _llm_request_error(self.model, self.base_url, exc) from exc
+            parsed = json.loads(result["choices"][0]["message"]["content"])
+            update_observation(observation, output=parsed, usage_details=result.get("usage") or {}, metadata={"finish_reason": _finish_reason(result)})
+            return parsed
 
     def complete_chat(
         self,
@@ -777,20 +794,29 @@ class OpenAICompatibleLLMClient(LLMClient):
         # No response_format here: json_object mode is incompatible with
         # the tools protocol on several providers. Tool-call JSON is the
         # structured-output mechanism in this path.
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                json=body,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=150,
-            )
-            response.raise_for_status()
-            result = response.json()
-        except requests.Timeout as exc:
-            raise TimeoutError(f"LLM request timed out after 150s: model={self.model}, base_url={self.base_url}") from exc
-        except requests.RequestException as exc:
-            raise _llm_request_error(self.model, self.base_url, exc) from exc
-        return result["choices"][0]["message"]
+        with start_generation(
+            "llm.complete_chat",
+            model=self.model,
+            input={"messages": messages, "tools": tools or [], "tool_choice": tool_choice},
+            metadata={"provider": "openai_compatible", "base_url": self.base_url, "tool_count": len(tools or [])},
+            model_parameters={"temperature": self.temperature},
+        ) as observation:
+            try:
+                response = requests.post(
+                    f"{self.base_url}/chat/completions",
+                    json=body,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=150,
+                )
+                response.raise_for_status()
+                result = response.json()
+            except requests.Timeout as exc:
+                raise TimeoutError(f"LLM request timed out after 150s: model={self.model}, base_url={self.base_url}") from exc
+            except requests.RequestException as exc:
+                raise _llm_request_error(self.model, self.base_url, exc) from exc
+            message = result["choices"][0]["message"]
+            update_observation(observation, output=message, usage_details=result.get("usage") or {}, metadata={"finish_reason": _finish_reason(result)})
+            return message
 
 
 def _llm_request_error(model: str, base_url: str, exc: requests.RequestException) -> RuntimeError:
@@ -801,6 +827,13 @@ def _llm_request_error(model: str, base_url: str, exc: requests.RequestException
     if exc.response is not None:
         detail = f", body={exc.response.text[:300]}"
     return RuntimeError(f"LLM request failed: model={model}, base_url={base_url}, error={exc}{detail}")
+
+
+def _finish_reason(result: JsonDict) -> str:
+    choices = result.get("choices") or []
+    if choices and isinstance(choices[0], dict):
+        return str(choices[0].get("finish_reason") or "")
+    return ""
 
 
 def build_llm(settings: Settings) -> LLMClient:

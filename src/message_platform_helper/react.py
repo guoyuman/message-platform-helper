@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from .application.security import TenantContext
+from .infrastructure.observability import elapsed_ms, stable_hash, start_span, update_observation
 from .llm import LLMClient, OpenAICompatibleLLMClient
 from .models import AgentResult, AgentStep, AssistantRequest, ConversationMemory, JsonDict, KnowledgeChunk, Tool
 from .platform import PlatformGateway
@@ -107,7 +109,7 @@ class RuleBasedAgent:
                 tool_payload = planned.get("input") or {}
                 if context.tool_registry is not None:
                     context.tool_registry.authorize(tool_name, context.tenant_context)
-                observation = tool.run(tool_payload, context)
+                observation = _run_tool_with_observability(self.name, tool, tool_payload, context)
                 observations.append(observation)
                 step_data = dict(observation)
                 if recovering:
@@ -235,7 +237,7 @@ class FunctionCallingAgent(RuleBasedAgent):
                         try:
                             if name != "todo_write" and context.tool_registry is not None:
                                 context.tool_registry.authorize(name, context.tenant_context)
-                            observation = tool.run(arguments, context)
+                            observation = _run_tool_with_observability(self.name, tool, arguments, context)
                         except Exception as exc:
                             observation = {"ok": False, "error": str(exc)}
                     if not observation.get("ok", True):
@@ -258,7 +260,7 @@ class FunctionCallingAgent(RuleBasedAgent):
                         {
                             "role": "tool",
                             "tool_call_id": str(call.get("id") or ""),
-                            "content": json.dumps(observation, ensure_ascii=False),
+                            "content": _tool_observation_content(observation),
                         }
                     )
                 rounds_without_todo = 0 if called_todo else rounds_without_todo + 1
@@ -291,6 +293,45 @@ class FunctionCallingAgent(RuleBasedAgent):
 
 def _openai_tool_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name).strip("_") or "tool"
+
+
+def _run_tool_with_observability(agent_name: str, tool: Tool, payload: JsonDict, context: AgentContext) -> JsonDict:
+    started = time.perf_counter()
+    with start_span(
+        f"tool.{tool.name}",
+        as_type="tool",
+        input=payload,
+        metadata={
+            "agent": agent_name,
+            "tool_name": tool.name,
+            "request_id": context.request.request_id,
+            "trace_id": context.request.trace_id,
+            "tenant_id_hash": stable_hash(context.request.tenant_id),
+            "dry_run": context.request.dry_run,
+        },
+    ) as observation:
+        try:
+            result = tool.run(payload, context)
+        except Exception as exc:
+            update_observation(
+                observation,
+                level="ERROR",
+                status_message=str(exc),
+                metadata={"agent": agent_name, "tool_name": tool.name, "latency_ms": round(elapsed_ms(started), 3), "ok": False},
+            )
+            raise
+        update_observation(
+            observation,
+            output=result,
+            level="DEFAULT" if result.get("ok", True) else "WARNING",
+            metadata={
+                "agent": agent_name,
+                "tool_name": tool.name,
+                "latency_ms": round(elapsed_ms(started), 3),
+                "ok": bool(result.get("ok", True)),
+            },
+        )
+        return result
 
 
 def _openai_tool_schema(tool: Tool, function_name: str | None = None) -> JsonDict:
@@ -381,3 +422,30 @@ def _write_todos(context: AgentContext, payload: JsonDict) -> JsonDict:
 
     context.scratch["todos"] = todos
     return {"ok": True, "summary": f"todo list updated ({len(todos)} item(s))", "todos": todos}
+
+
+def _tool_observation_content(observation: JsonDict) -> str:
+    return json.dumps(_compact_tool_observation(observation), ensure_ascii=False)
+
+
+def _compact_tool_observation(value: object, depth: int = 0) -> object:
+    if depth >= 4:
+        return _brief(value)
+    if isinstance(value, dict):
+        result: JsonDict = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in {"content", "raw", "executionTrace", "platformPayload", "saveResponse", "templateListResponse", "templateContent"}:
+                continue
+            result[key_text] = _compact_tool_observation(item, depth + 1)
+        return result
+    if isinstance(value, list):
+        items = [_compact_tool_observation(item, depth + 1) for item in value]
+        return items[:10]
+    return _brief(value)
+
+
+def _brief(value: object) -> object:
+    if isinstance(value, str) and len(value) > 300:
+        return value[:300]
+    return value

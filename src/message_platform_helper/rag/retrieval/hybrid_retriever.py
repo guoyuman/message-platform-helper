@@ -25,7 +25,7 @@ class HybridRetriever:
     vector_retriever: RetrievalBackend
     keyword_top_k: int = 20
     vector_top_k: int = 20
-    final_top_k: int = 20
+    final_top_k: int = 50
     config: RetrievalConfig = RetrievalConfig()
 
     def retrieve(self, query: str, *, limit: int = 5, tags: list[str] | None = None, filters: dict[str, Any] | None = None) -> list[KnowledgeChunk]:
@@ -35,7 +35,8 @@ class HybridRetriever:
             keyword_results,
             vector_results,
             config=self.config,
-            limit=min(limit, self.final_top_k),
+            # This is the candidate pool for reranking, not the answer limit.
+            limit=max(limit, self.final_top_k),
         )
         _log_retrieval_event(
             "rag.retrieval.hybrid.fused",

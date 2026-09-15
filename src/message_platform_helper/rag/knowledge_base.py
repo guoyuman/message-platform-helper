@@ -407,6 +407,9 @@ class KnowledgeBase:
             raise ValueError("Embedding vectors must not be empty.")
         if any(len(vector) != dimensions for vector in embeddings):
             raise ValueError("Embedding dimensions are inconsistent.")
+        expected = getattr(self.embedding_provider, "dimensions", dimensions)
+        if int(expected) != dimensions:
+            raise ValueError(f"Embedding dimensions do not match provider: expected={expected}, actual={dimensions}.")
         return dimensions
 
 

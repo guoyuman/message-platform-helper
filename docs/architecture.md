@@ -332,7 +332,10 @@ FastAPI 可选入口提供：
 - `model_time_ms`
 - `token_usage`
 
-结构化日志通过 `infrastructure/observability.py` 输出，后续可接 OpenTelemetry、Prometheus、ELK 或云日志平台。
+结构化日志通过 `infrastructure/observability.py` 输出。配置
+`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` 后，Langfuse 会复用现有
+`trace_id` 作为请求关联标识，并记录请求、LLM generation、RAG retriever、
+工具执行和 `task_success` score；未配置时自动使用 no-op，不影响离线运行。
 
 ## 权限与多租户
 

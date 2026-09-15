@@ -3,6 +3,7 @@
 _EXPORT_MODULES = {
     "CitationBuilder": ".citation_builder",
     "BGEEmbeddingProvider": ".embedding",
+    "BGEReranker": ".reranker",
     "Chunk": ".models",
     "ChunkStrategy": ".chunker",
     "ContextBuilder": ".context_builder",

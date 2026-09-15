@@ -34,4 +34,5 @@ def chunk_to_knowledge(chunk: ChunkRecord, document: DocumentRecord | None = Non
         source=source,
         tags=[str(tag) for tag in tags],
         score=score,
+        metadata=metadata,
     )

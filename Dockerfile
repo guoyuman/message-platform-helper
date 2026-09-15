@@ -10,7 +10,7 @@ COPY src ./src
 COPY knowledge ./knowledge
 COPY config ./config
 
-RUN pip install --no-cache-dir ".[server]"
+RUN pip install --no-cache-dir ".[server,observability]"
 
 EXPOSE 8790
 

@@ -50,6 +50,24 @@ http://127.0.0.1:5173
 [//]: # (- `MESSAGE_HELPER_BUSINESS_AGENT_URL`: 已有 `message-agent` 地址，例如 `http://127.0.0.1:8787`。)
 - `MESSAGE_HELPER_PLATFORM_HEADERS_JSON`: 透传给 Java 平台的租户、鉴权、网关 Header。
 - `MESSAGE_HELPER_EMBEDDING_PROVIDER`: `deterministic`、`openai` 或 `bge`。
+- `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`: 同时配置后启用 Langfuse trace。
+- `LANGFUSE_BASE_URL`: Langfuse 地址，云端默认 `https://cloud.langfuse.com`，自部署时改为实例地址。
+- `LANGFUSE_TRACING_ENVIRONMENT`: Langfuse environment 标签，默认建议使用 `development`、`staging` 或 `production`。
+- `MESSAGE_HELPER_LANGFUSE_ENABLED`: 显式开启/关闭 Langfuse；未配置 key 时仍保持 no-op。
+
+Langfuse 观测覆盖：
+
+- 每个请求一个 trace，关联现有 `trace_id`、`request_id`、session、租户/用户 hash。
+- LLM `complete_json` 和 function-calling 记录 generation、模型、输入输出、usage 和耗时。
+- RAG 检索记录 retriever span、候选数、rerank 后 chunk id、引用数和耗时。
+- 每次工具执行记录 tool span、工具名、Agent、成功状态和耗时。
+- 请求结束记录 `task_success` 与 `request_latency_ms` score。密码、API key、Authorization、Cookie 和邮箱会脱敏/哈希。
+
+安装观测依赖：
+
+```bash
+pip install -e '.[server,observability]'
+```
 
 ## HTTP API
 

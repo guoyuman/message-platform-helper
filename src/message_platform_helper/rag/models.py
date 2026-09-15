@@ -79,6 +79,7 @@ class Chunk:
             source=self.source,
             tags=self.tags,
             score=score,
+            metadata=dict(self.metadata),
         )
 
 

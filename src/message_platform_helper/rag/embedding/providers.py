@@ -7,7 +7,7 @@ import os
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .base import EmbeddingProvider
@@ -85,16 +85,35 @@ class BGEEmbeddingProvider:
     model: str = "BAAI/bge-m3"
     dimensions: int = 1024
     query_instruction: str = "为这个句子生成表示以用于检索相关文章："
+    batch_size: int = 32
+    _model: Any = field(default=None, init=False, repr=False)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        model = self._get_model()
+        vectors = model.encode(
+            texts,
+            batch_size=max(1, self.batch_size),
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        result = [[float(value) for value in vector] for vector in vectors]
+        if any(len(vector) != self.dimensions for vector in result):
+            actual = len(result[0]) if result else 0
+            raise ValueError(f"BGE embedding dimension mismatch: configured={self.dimensions}, actual={actual}.")
+        return result
+
+    def _get_model(self) -> Any:
+        if self._model is not None:
+            return self._model
         try:
             _patch_xlm_roberta_prepare_for_model()
             from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
         except ImportError as exc:
             raise RuntimeError("BGE embedding requires sentence-transformers to be installed.") from exc
-        model = SentenceTransformer(self.model)
-        vectors = model.encode(texts, normalize_embeddings=True)
-        return [[float(value) for value in vector] for vector in vectors]
+        self._model = SentenceTransformer(self.model)
+        return self._model
 
     def embed_query(self, texts: list[str]) -> list[list[float]]:
         """BGE 系列是指令微调模型：query 侧必须加检索指令前缀，文档侧不加。"""
@@ -103,8 +122,8 @@ class BGEEmbeddingProvider:
 
 def build_embedding_provider(config: dict[str, Any] | None = None) -> EmbeddingProvider:
     embedding = dict((config or {}).get("embedding") or config or {})
-    provider = str(embedding.get("provider") or os.environ.get("MESSAGE_HELPER_EMBEDDING_PROVIDER") or "deterministic").lower()
-    model = str(embedding.get("model") or os.environ.get("MESSAGE_HELPER_EMBEDDING_MODEL") or "")
+    provider = str(embedding.get("provider") or os.environ.get("MESSAGE_HELPER_EMBEDDING_PROVIDER") or "bge").lower()
+    model = str(embedding.get("model") or os.environ.get("MESSAGE_HELPER_EMBEDDING_MODEL") or "BAAI/bge-m3")
     dimensions = int(embedding.get("dimensions") or os.environ.get("MESSAGE_HELPER_EMBEDDING_DIMENSIONS") or 1024)
     print(f"Using embedding provider with model {model} and dimensions {dimensions}.")
     print(f"Using embedding provider {provider}.")
@@ -116,7 +135,11 @@ def build_embedding_provider(config: dict[str, Any] | None = None) -> EmbeddingP
             dimensions=dimensions,
         )
     if provider == "bge":
-        return BGEEmbeddingProvider(model=model or "BAAI/bge-m3", dimensions=dimensions)
+        return BGEEmbeddingProvider(
+            model=model or "BAAI/bge-m3",
+            dimensions=dimensions,
+            batch_size=int(embedding.get("batch_size") or os.environ.get("MESSAGE_HELPER_EMBEDDING_BATCH_SIZE") or 32),
+        )
 
     return DeterministicEmbeddingProvider(dimensions=dimensions)
 

@@ -21,6 +21,7 @@ def parser_for(document: Document) -> DocumentParser:
         "markdown": MarkdownParser(),
         "pdf": PdfParser(),
         "docx": DocxParser(),
-        "xlsx": DocxParser(),
+        # XLSX loader emits heading + pipe-separated rows, which is Markdown-shaped.
+        "xlsx": MarkdownParser(),
     }
     return parsers.get(document.metadata.format, PdfParser())

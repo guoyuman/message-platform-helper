@@ -12,6 +12,7 @@ from message_platform_helper.rag import (
     HybridRetriever,
     QueryAnalyzer,
     RetrievalConfig,
+    BGEReranker,
     RuleBasedReranker,
     build_rag_service,
     reciprocal_rank_fusion,
@@ -129,6 +130,18 @@ class HybridRagPipelineTests(unittest.TestCase):
 
         self.assertEqual(ranked[0].id, "2")
 
+    def test_bge_reranker_keeps_model_score_dominant_over_rules(self) -> None:
+        chunks = [
+            KnowledgeChunk(id="correct", title="Plain", content="right answer", source="test", score=0.2),
+            KnowledgeChunk(id="rule", title="mail failure", content="keyword noise", source="test", tags=["mail"], score=1.0),
+        ]
+        reranker = FakeBGEReranker(model_weight=0.85, metadata_weight=0.10, rule_weight=0.05)
+
+        ranked = reranker.rerank("mail failure", chunks, limit=2)
+
+        self.assertEqual(ranked[0].id, "correct")
+        self.assertIn("rerank_model_score", ranked[0].metadata)
+
     def test_query_analyzer_uses_readable_chinese_signals(self) -> None:
         analysis = QueryAnalyzer().analyze("\u6d88\u606f\u6a21\u677f\u5982\u4f55\u914d\u7f6e")
 
@@ -136,7 +149,7 @@ class HybridRagPipelineTests(unittest.TestCase):
         self.assertIn("template", analysis.filters["tags"])
         self.assertIn("\u6d88\u606f\u6a21\u677f\u5982\u4f55\u914d\u7f6e", analysis.terms)
 
-    def test_rag_service_falls_back_when_inferred_tags_are_too_narrow(self) -> None:
+    def test_rag_service_does_not_apply_inferred_tags_as_hard_filters(self) -> None:
         chunks = [
             KnowledgeChunk(
                 id="wrong-tag",
@@ -152,6 +165,19 @@ class HybridRagPipelineTests(unittest.TestCase):
         results = service.retrieve("\u6d88\u606f\u6a21\u677f\u5982\u4f55\u914d\u7f6e", limit=1)
 
         self.assertEqual(results[0].id, "wrong-tag")
+
+    def test_hybrid_retriever_returns_candidate_pool_for_reranker(self) -> None:
+        keyword = [KnowledgeChunk(id=f"k{index}", title="K", content="kw", source="kw", score=float(100 - index)) for index in range(5)]
+        vector = [KnowledgeChunk(id=f"v{index}", title="V", content="vec", source="vec", score=1.0 - index / 10) for index in range(5)]
+
+        results = HybridRetriever(
+            FakeRetriever(keyword),
+            FakeRetriever(vector),
+            final_top_k=8,
+            config=RetrievalConfig(similarity_threshold=0.0),
+        ).retrieve("query", limit=3)
+
+        self.assertEqual(len(results), 8)
 
     def test_hybrid_retriever_logs_backend_failures(self) -> None:
         vector = [KnowledgeChunk(id="vec", title="Vector", content="semantic match", source="vec", score=0.9)]
@@ -186,6 +212,11 @@ class TagAwareRetriever:
 class FailingRetriever:
     def retrieve(self, query: str, *, limit: int = 5, tags: list[str] | None = None, filters: dict | None = None) -> list[KnowledgeChunk]:
         raise RuntimeError("backend unavailable")
+
+
+class FakeBGEReranker(BGEReranker):
+    def _predict(self, query: str, chunks: list[KnowledgeChunk]) -> list[float]:
+        return [1.0 if chunk.id == "correct" else 0.0 for chunk in chunks]
 
 
 if __name__ == "__main__":

@@ -116,13 +116,22 @@ class InMemoryKnowledgeBase:
             source=source,
             tags=tags,
             score=0.0,
+            metadata=dict(chunk.metadata),
         )
         self.chunks[legacy.id] = legacy
         return legacy
 
 
 def _with_score(chunk: KnowledgeChunk, score: float) -> KnowledgeChunk:
-    return KnowledgeChunk(id=chunk.id, title=chunk.title, content=chunk.content, source=chunk.source, tags=list(chunk.tags), score=score)
+    return KnowledgeChunk(
+        id=chunk.id,
+        title=chunk.title,
+        content=chunk.content,
+        source=chunk.source,
+        tags=list(chunk.tags),
+        score=score,
+        metadata=dict(chunk.metadata),
+    )
 
 
 def _char_ngrams(text: str, size: int) -> list[str]:

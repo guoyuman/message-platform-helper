@@ -10,20 +10,33 @@
     }
   },
   "embedding": {
-    "provider": "openai",
-    "model": "text-embedding-3-large",
+    "provider": "bge",
+    "model": "BAAI/bge-m3",
     "dimensions": 1024
   },
   "retrieval": {
-    "keyword_top_k": 20,
-    "vector_top_k": 20,
-    "final_top_k": 5,
-    "keyword_weight": 0.7,
-    "vector_weight": 0.3,
-    "similarity_threshold": 0.2
+    "keyword_top_k": 50,
+    "vector_top_k": 50,
+    "candidate_top_k": 50,
+    "rerank_top_k": 5,
+    "keyword_weight": 0.5,
+    "vector_weight": 0.5,
+    "similarity_threshold": 0.0
   },
   "chunk": {
     "strategy": "semantic_section",
     "max_chars_per_chunk": 600
+  },
+  "reranker": {
+    "provider": "bge",
+    "model": "BAAI/bge-reranker-v2-m3",
+    "model_weight": 0.85,
+    "metadata_weight": 0.10,
+    "rule_weight": 0.05
+  },
+  "image": {
+    "ocr": "paddleocr",
+    "vision_caption": "optional-local-vlm",
+    "embed_image_vectors": false
   }
 }

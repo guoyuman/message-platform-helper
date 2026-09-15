@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 from ..application.security import TenantContext
+from ..infrastructure.observability import elapsed_ms, start_span, update_observation
 from ..llm import LLMClient
 from ..models import JsonDict, KnowledgeChunk
 from .citation_builder import CitationBuilder
 from .context_builder import ContextBuilder
 from .prompt_builder import RagPromptBuilder
 from .query_analyzer import QueryAnalyzer
-from .reranker import Reranker, RuleBasedReranker
+from .reranker import BGEReranker, Reranker
 from .retriever import Retriever
 
 
@@ -37,49 +39,60 @@ class RagService:
         tags: list[str] | None = None,
         tenant_context: TenantContext | None = None,
     ) -> list[KnowledgeChunk]:
-        analysis = self.query_analyzer.analyze(query)
-        merged_tags = _merge_tags(tags, analysis.filters.get("tags"))
-        retrieval_limit = max(limit, 20)
-        _log_rag_event(
-            "rag.retrieve.start",
-            query=query,
-            limit=limit,
-            retrieval_limit=retrieval_limit,
-            explicit_tags=tags,
-            inferred_filters=analysis.filters,
-            merged_tags=merged_tags,
-            tenant_namespace=getattr(tenant_context, "knowledge_namespace", ""),
-        )
-        retrieved = self.retriever.retrieve(query, limit=retrieval_limit, tags=merged_tags, filters=analysis.filters)
-        _log_rag_event(
-            "rag.retrieve.recalled",
-            query=query,
-            count=len(retrieved),
-            top_chunks=_chunk_snapshots(retrieved),
-        )
-        if tags is None and merged_tags and len(retrieved) < limit:
-            fallback = self.retriever.retrieve(query, limit=retrieval_limit, tags=None, filters=None)
+        started = time.perf_counter()
+        with start_span(
+            "rag.retrieve",
+            as_type="retriever",
+            input={"query": query, "limit": limit, "tags": tags},
+            metadata={"tenant_namespace": getattr(tenant_context, "knowledge_namespace", "")},
+        ) as observation:
+            analysis = self.query_analyzer.analyze(query)
+            # Explicit tags are hard filters. Inferred intent tags are only hints;
+            # making them hard filters is a common recall killer for Chinese queries.
+            merged_tags = tags
+            backend_filters = {key: value for key, value in analysis.filters.items() if key != "tags"}
+            retrieval_limit = max(limit, 20)
             _log_rag_event(
-                "rag.retrieve.fallback",
+                "rag.retrieve.start",
                 query=query,
-                reason="inferred_tags_too_narrow",
-                primary_count=len(retrieved),
-                fallback_count=len(fallback),
-                fallback_top_chunks=_chunk_snapshots(fallback),
+                limit=limit,
+                retrieval_limit=retrieval_limit,
+                explicit_tags=tags,
+                inferred_filters=analysis.filters,
+                merged_tags=merged_tags,
+                tenant_namespace=getattr(tenant_context, "knowledge_namespace", ""),
             )
-            retrieved = _merge_chunks(retrieved, fallback)
-        reranked = self.reranker.rerank(query, retrieved, limit=limit)
-        selected_ids = {chunk.id for chunk in reranked}
-        _log_rag_event(
-            "rag.rerank.completed",
-            query=query,
-            candidate_count=len(retrieved),
-            selected_count=len(reranked),
-            before_top_chunks=_chunk_snapshots(retrieved),
-            after_top_chunks=_chunk_snapshots(reranked),
-            dropped_chunk_ids=[chunk.id for chunk in retrieved if chunk.id not in selected_ids][:10],
-        )
-        return reranked
+            retrieved = self.retriever.retrieve(query, limit=retrieval_limit, tags=merged_tags, filters=backend_filters)
+            _log_rag_event(
+                "rag.retrieve.recalled",
+                query=query,
+                count=len(retrieved),
+                top_chunks=_chunk_snapshots(retrieved),
+            )
+            reranked = self.reranker.rerank(query, retrieved, limit=limit)
+            selected_ids = {chunk.id for chunk in reranked}
+            _log_rag_event(
+                "rag.rerank.completed",
+                query=query,
+                candidate_count=len(retrieved),
+                selected_count=len(reranked),
+                before_top_chunks=_chunk_snapshots(retrieved),
+                after_top_chunks=_chunk_snapshots(reranked),
+                dropped_chunk_ids=[chunk.id for chunk in retrieved if chunk.id not in selected_ids][:10],
+            )
+            update_observation(
+                observation,
+                output={"chunks": _chunk_snapshots(reranked), "chunk_ids": [chunk.id for chunk in reranked]},
+                metadata={
+                    "intent": analysis.intent,
+                    "terms": analysis.terms,
+                    "filters": analysis.filters,
+                    "candidate_count": len(retrieved),
+                    "selected_count": len(reranked),
+                    "latency_ms": round(elapsed_ms(started), 3),
+                },
+            )
+            return reranked
 
     def answer(
         self,
@@ -90,95 +103,114 @@ class RagService:
         tenant_context: TenantContext | None = None,
         llm: LLMClient | None = None,
     ) -> JsonDict:
-        analysis = self.query_analyzer.analyze(question)
-        selected = chunks if chunks is not None else self.retrieve(question, limit=limit, tenant_context=tenant_context)
-        _log_rag_event(
-            "rag.answer.input",
-            question=question,
-            supplied_chunks=chunks is not None,
-            chunk_count=len(selected),
-            chunks=_chunk_snapshots(selected),
-            analysis={"intent": analysis.intent, "terms": analysis.terms, "filters": analysis.filters},
-        )
-        built_context = self.context_builder.build(question, selected, analysis)
-        selected = built_context.chunks
-        prompt = self.prompt_builder.build(question, selected)
-        _log_rag_event(
-            "rag.prompt.built",
-            question=question,
-            selected_count=len(selected),
-            selected_chunks=_chunk_snapshots(selected),
-            context_chars=len(built_context.context),
-            prompt_chars=len(prompt),
-            context_preview=built_context.context[:500],
-            prompt_preview=prompt[:500],
-            citation_count=len(built_context.citations),
-        )
-        if not selected:
-            return {
-                "ok": False,
-                "summary": "knowledge not found",
-                "answer": "\u77e5\u8bc6\u5e93\u91cc\u8fd8\u6ca1\u6709\u68c0\u7d22\u5230\u53ef\u7528\u5185\u5bb9\u3002\u8bf7\u5148\u5199\u5165\u4f7f\u7528\u8bf4\u660e\u6216\u6392\u67e5\u6587\u6863\uff0c\u518d\u91cd\u8bd5\u8fd9\u4e2a\u95ee\u9898\u3002",
+        with start_span("rag.answer", input={"question": question, "limit": limit}) as observation:
+            analysis = self.query_analyzer.analyze(question)
+            selected = chunks if chunks is not None else self.retrieve(question, limit=limit, tenant_context=tenant_context)
+            _log_rag_event(
+                "rag.answer.input",
+                question=question,
+                supplied_chunks=chunks is not None,
+                chunk_count=len(selected),
+                chunks=_chunk_snapshots(selected),
+                analysis={"intent": analysis.intent, "terms": analysis.terms, "filters": analysis.filters},
+            )
+            built_context = self.context_builder.build(question, selected, analysis)
+            selected = built_context.chunks
+            prompt = self.prompt_builder.build(question, selected)
+            _log_rag_event(
+                "rag.prompt.built",
+                question=question,
+                selected_count=len(selected),
+                selected_chunks=_chunk_snapshots(selected),
+                context_chars=len(built_context.context),
+                prompt_chars=len(prompt),
+                context_preview=built_context.context[:500],
+                prompt_preview=prompt[:500],
+                citation_count=len(built_context.citations),
+            )
+            if not selected:
+                result = {
+                    "ok": False,
+                    "summary": "knowledge not found",
+                    "answer": "\u77e5\u8bc6\u5e93\u91cc\u8fd8\u6ca1\u6709\u68c0\u7d22\u5230\u53ef\u7528\u5185\u5bb9\u3002\u8bf7\u5148\u5199\u5165\u4f7f\u7528\u8bf4\u660e\u6216\u6392\u67e5\u6587\u6863\uff0c\u518d\u91cd\u8bd5\u8fd9\u4e2a\u95ee\u9898\u3002",
+                    "citations": built_context.citations,
+                    "prompt": prompt,
+                    "issues": [
+                        {
+                            "code": "knowledge.not_found",
+                            "message": "No knowledge chunks matched the question.",
+                            "severity": "warning",
+                        }
+                    ],
+                }
+                update_observation(observation, output=result, level="WARNING", metadata={"selected_count": 0})
+                return result
+            generated_answer = _llm_answer(llm, question, prompt) if llm is not None else ""
+            result = {
+                "ok": True,
+                "summary": f"answered from {len(selected)} knowledge chunk(s)",
+                "answer": generated_answer or _extractive_answer(question, selected),
                 "citations": built_context.citations,
+                "context": built_context.context,
                 "prompt": prompt,
-                "issues": [
-                    {
-                        "code": "knowledge.not_found",
-                        "message": "No knowledge chunks matched the question.",
-                        "severity": "warning",
-                    }
-                ],
             }
-        generated_answer = _llm_answer(llm, question, prompt) if llm is not None else ""
-        return {
-            "ok": True,
-            "summary": f"answered from {len(selected)} knowledge chunk(s)",
-            "answer": generated_answer or _extractive_answer(question, selected),
-            "citations": built_context.citations,
-            "context": built_context.context,
-            "prompt": prompt,
-        }
+            update_observation(
+                observation,
+                output=result,
+                metadata={
+                    "selected_count": len(selected),
+                    "citation_count": len(built_context.citations),
+                    "context_chars": len(built_context.context),
+                    "prompt_chars": len(prompt),
+                },
+            )
+            return result
 
 
 def build_rag_service(retriever: Retriever, reranker: Reranker | None = None) -> RagService:
     return RagService(
         retriever=retriever,
-        reranker=reranker or RuleBasedReranker(),
+        reranker=reranker or BGEReranker(),
         prompt_builder=RagPromptBuilder(),
         citation_builder=CitationBuilder(),
     )
 
 
-def build_postgres_rag_service(session: object, embedding_provider: object | None = None, reranker: Reranker | None = None) -> RagService:
+def build_postgres_rag_service(
+    session: object,
+    embedding_provider: object | None = None,
+    reranker: Reranker | None = None,
+    config: dict | None = None,
+) -> RagService:
     from .embedding import DeterministicEmbeddingProvider
     from .repository import ChunkRepository, VectorRepository
-    from .retrieval import HybridRetriever, KeywordRetriever, VectorRetriever
+    from .retrieval import HybridRetriever, KeywordRetriever, RetrievalConfig, VectorRetriever
 
     provider = embedding_provider if embedding_provider is not None else DeterministicEmbeddingProvider()
+    retrieval = dict((config or {}).get("retrieval") or {})
+    retrieval_config = RetrievalConfig(
+        keyword_weight=float(retrieval.get("keyword_weight", 0.5)),
+        vector_weight=float(retrieval.get("vector_weight", 0.5)),
+        similarity_threshold=float(retrieval.get("similarity_threshold", 0.0)),
+    )
     keyword_retriever = KeywordRetriever(ChunkRepository(session))  # type: ignore[arg-type]
     vector_retriever = VectorRetriever(VectorRepository(session), provider)  # type: ignore[arg-type]
-    return build_rag_service(HybridRetriever(keyword_retriever, vector_retriever), reranker or RuleBasedReranker())
-
-
-def _merge_tags(explicit: list[str] | None, inferred: list[str] | None) -> list[str] | None:
-    if explicit is None and inferred is None:
-        return None
-    result: list[str] = []
-    for tag in [*(explicit or []), *(inferred or [])]:
-        if tag not in result:
-            result.append(tag)
-    return result
-
-
-def _merge_chunks(primary: list[KnowledgeChunk], fallback: list[KnowledgeChunk]) -> list[KnowledgeChunk]:
-    result: list[KnowledgeChunk] = []
-    seen: set[str] = set()
-    for chunk in [*primary, *fallback]:
-        if chunk.id in seen:
-            continue
-        result.append(chunk)
-        seen.add(chunk.id)
-    return result
+    retriever = HybridRetriever(
+        keyword_retriever,
+        vector_retriever,
+        keyword_top_k=int(retrieval.get("keyword_top_k", 50)),
+        vector_top_k=int(retrieval.get("vector_top_k", 50)),
+        final_top_k=int(retrieval.get("candidate_top_k", 50)),
+        config=retrieval_config,
+    )
+    rerank = dict((config or {}).get("reranker") or {})
+    reranker = reranker or BGEReranker(
+        model_name=str(rerank.get("model") or "BAAI/bge-reranker-v2-m3"),
+        model_weight=float(rerank.get("model_weight", 0.85)),
+        metadata_weight=float(rerank.get("metadata_weight", 0.10)),
+        rule_weight=float(rerank.get("rule_weight", 0.05)),
+    )
+    return build_rag_service(retriever, reranker)
 
 
 def _log_rag_event(event: str, **payload: object) -> None:

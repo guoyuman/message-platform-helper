@@ -141,6 +141,12 @@ def load_platform_config(config_dir: Path | None = None) -> ConfigCatalog:
     )
 
 
+def load_rag_config(config_dir: Path | None = None) -> JsonDict:
+    """Load the JSON-compatible RAG config kept in ``config/rag.yaml``."""
+    root = config_dir or default_config_dir()
+    return _load_json_like(root / "rag.yaml")
+
+
 def _load_prompts(path: Path) -> Dict[str, str]:
     if not path.exists():
         return {}
